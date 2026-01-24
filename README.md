@@ -1,16 +1,17 @@
 <div align="center">
 
-<img src="welcome.png" alt="密语 CipherTalk" width="100%" />
+<img src="public/welcome.png" alt="密语 CipherTalk" width="100%" />
 
 # 🔐 密语 CipherTalk
 
-**一款现代化的记录查看与分析工具**
+**一款现代化的微信聊天记录查看与分析工具**
 
 [![License](https://img.shields.io/badge/license-CC--BY--NC--SA--4.0-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.1.2-green.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg?logo=windows)]()
 [![Electron](https://img.shields.io/badge/Electron-39-47848F.svg?logo=electron)]()
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react)]()
+[![Telegram](https://img.shields.io/badge/Telegram-Join%20Group-26A5E4.svg?logo=telegram)](https://t.me/+toZ7bY15IZo3NjVl)
 
 [功能特性](#-功能特性) • [快速开始](#-快速开始) • [技术栈](#️-技术栈) • [贡献指南](#-贡献指南) • [许可证](#-许可证)
 
@@ -297,7 +298,7 @@ export const useChatStore = create<ChatStore>((set) => ({
 |:---:|:---|
 | 🐛 **问题反馈** | [GitHub Issues](https://github.com/ILoveBingLu/CipherTalk/issues) |
 | 💬 **讨论交流** | [GitHub Discussions](https://github.com/ILoveBingLu/CipherTalk/discussions) |
-| 📱 **Telegram 群组** | [加入群聊](https://t.me/your_group_link) |
+| 📱 **Telegram 群组** | [加入群聊](https://t.me/+toZ7bY15IZo3NjVl) |
 | ⭐ **项目主页** | [GitHub Repository](https://github.com/ILoveBingLu/CipherTalk) |
 
 </div>
