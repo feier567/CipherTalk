@@ -158,7 +158,7 @@ export class ImageDecryptService {
         return { success: false, error: '未找到高清图，请在微信中点开该图片查看后重试' }
       }
       if (!datPath) {
-        console.error(`[ImageDecrypt] 未找到图片文件: ${payload.imageDatName || payload.imageMd5} sessionId=${payload.sessionId}`)
+        console.warn(`[ImageDecrypt] 未找到图片文件: ${payload.imageDatName || payload.imageMd5} sessionId=${payload.sessionId}`)
         return { success: false, error: '未找到图片文件' }
       }
 
@@ -622,8 +622,9 @@ export class ImageDecryptService {
           continue
         }
 
-        // 构建路径: msg/attach/{dir1Name}/{dir2Name}/Img/{fileName}
+        // 构建可能的所有路径结构（仅限 msg/attach）
         const possiblePaths = [
+          // 常见结构: msg/attach/xx/yy/Img/name
           join(accountDir, 'msg', 'attach', dir1Name, dir2Name, 'Img', fileName),
           join(accountDir, 'msg', 'attach', dir1Name, dir2Name, 'mg', fileName),
           join(accountDir, 'msg', 'attach', dir1Name, dir2Name, fileName),
@@ -719,7 +720,7 @@ export class ImageDecryptService {
             const lowerName = entry.name.toLowerCase()
             // 顶层目录过滤
             if (depth === 0) {
-              if (['fileStorage', 'image', 'image2', 'msg', 'attach', 'img'].some(k => lowerName.includes(k))) {
+              if (['image', 'image2', 'msg', 'attach', 'img'].some(k => lowerName.includes(k))) {
                 queue.push({ path: fullPath, depth: depth + 1 })
               }
             } else {
@@ -767,7 +768,12 @@ export class ImageDecryptService {
   }
 
   private isThumbnailDat(fileName: string): boolean {
-    return fileName.includes('.t.dat') || fileName.includes('_t.dat')
+    const lower = fileName.toLowerCase()
+    return (
+      lower.includes('.t.dat') ||
+      lower.includes('_t.dat') ||
+      lower.includes('_thumb.dat')
+    )
   }
 
   private hasXVariant(baseLower: string): boolean {
@@ -780,7 +786,11 @@ export class ImageDecryptService {
     const ext = extname(lower)
     const base = ext ? lower.slice(0, -ext.length) : lower
     // 支持新命名 _thumb 和旧命名 _t
-    return base.endsWith('_t') || base.endsWith('_thumb')
+    return (
+      base.endsWith('_t') ||
+      base.endsWith('_thumb') ||
+      base.endsWith('.t')
+    )
   }
 
   private isHdPath(filePath: string): boolean {
@@ -1187,7 +1197,7 @@ export class ImageDecryptService {
     roots.push(oldPath)
 
     // 去重
-    const uniqueRoots = [...new Set(roots)]
+    const uniqueRoots = Array.from(new Set(roots))
     // 过滤存在的路径
     const existingRoots = uniqueRoots.filter(r => existsSync(r))
 
@@ -1773,13 +1783,13 @@ export class ImageDecryptService {
    * 清理 hardlink 数据库缓存（用于增量更新时释放文件）
    */
   clearHardlinkCache(): void {
-    for (const [accountDir, state] of this.hardlinkCache.entries()) {
+    this.hardlinkCache.forEach((state, accountDir) => {
       try {
         state.db.close()
       } catch (e) {
         console.warn(`关闭 hardlink 数据库失败: ${accountDir}`, e)
       }
-    }
+    })
     this.hardlinkCache.clear()
   }
 }

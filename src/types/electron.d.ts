@@ -23,6 +23,7 @@ export interface ElectronAPI {
     openBrowserWindow: (url: string, title?: string) => Promise<void>
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => Promise<void>
     openAISummaryWindow: (sessionId: string, sessionName: string) => Promise<boolean>
+    openChatHistoryWindow: (sessionId: string, messageId: number) => Promise<boolean>
   }
   config: {
     get: (key: string) => Promise<unknown>
@@ -224,6 +225,19 @@ export interface ElectronAPI {
     getVoiceData: (sessionId: string, msgId: string, createTime?: number) => Promise<{
       success: boolean
       data?: string  // base64 encoded WAV
+      error?: string
+    }>
+    getMessagesByDate: (sessionId: string, targetTimestamp: number, limit?: number) => Promise<{
+      success: boolean
+      messages?: Message[]
+      targetIndex?: number
+      targetIndex?: number
+      error?: string
+    }>
+    getMessage: (sessionId: string, localId: number) => Promise<{ success: boolean; message?: Message; error?: string }>
+    getDatesWithMessages: (sessionId: string, year: number, month: number) => Promise<{
+      success: boolean
+      dates?: string[]
       error?: string
     }>
     onSessionsUpdated: (callback: (sessions: ChatSession[]) => void) => () => void

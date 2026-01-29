@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => ipcRenderer.invoke('window:openVideoPlayerWindow', videoPath, videoWidth, videoHeight),
     openBrowserWindow: (url: string, title?: string) => ipcRenderer.invoke('window:openBrowserWindow', url, title),
     openAISummaryWindow: (sessionId: string, sessionName: string) => ipcRenderer.invoke('window:openAISummaryWindow', sessionId, sessionName),
+    openChatHistoryWindow: (sessionId: string, messageId: number) => ipcRenderer.invoke('window:openChatHistoryWindow', sessionId, messageId),
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => ipcRenderer.invoke('window:resizeToFitVideo', videoWidth, videoHeight),
     splashReady: () => ipcRenderer.send('window:splashReady'),
     onSplashFadeOut: (callback: () => void) => {
@@ -202,6 +203,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setCurrentSession: (sessionId: string | null) => ipcRenderer.invoke('chat:setCurrentSession', sessionId),
     getSessionDetail: (sessionId: string) => ipcRenderer.invoke('chat:getSessionDetail', sessionId),
     getVoiceData: (sessionId: string, msgId: string, createTime?: number) => ipcRenderer.invoke('chat:getVoiceData', sessionId, msgId, createTime),
+    getMessagesByDate: (sessionId: string, targetTimestamp: number, limit?: number) =>
+      ipcRenderer.invoke('chat:getMessagesByDate', sessionId, targetTimestamp, limit),
+    getMessage: (sessionId: string, localId: number) => ipcRenderer.invoke('chat:getMessage', sessionId, localId),
+    getDatesWithMessages: (sessionId: string, year: number, month: number) =>
+      ipcRenderer.invoke('chat:getDatesWithMessages', sessionId, year, month),
     onSessionsUpdated: (callback: (sessions: any[]) => void) => {
       const listener = (_: any, sessions: any[]) => callback(sessions)
       ipcRenderer.on('chat:sessions-updated', listener)

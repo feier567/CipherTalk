@@ -46,6 +46,7 @@ export interface Message {
   // 引用消息相关
   quotedContent?: string
   quotedSender?: string
+  quotedImageMd5?: string
   // 图片相关
   imageMd5?: string
   imageDatName?: string
@@ -60,6 +61,30 @@ export interface Message {
   fileSize?: number       // 文件大小（字节）
   fileExt?: string        // 文件扩展名
   fileMd5?: string        // 文件 MD5
+  chatRecordList?: ChatRecordItem[] // 聊天记录列表 (Type 19)
+}
+
+export interface ChatRecordItem {
+  datatype: number
+  datadesc?: string
+  datatitle?: string
+  sourcename?: string
+  sourcetime?: string
+  sourceheadurl?: string
+  fileext?: string
+  datasize?: number
+  messageuuid?: string
+  // 媒体信息
+  dataurl?: string
+  datathumburl?: string
+  datacdnurl?: string
+  qaeskey?: string
+  aeskey?: string
+  md5?: string
+  imgheight?: number
+  imgwidth?: number
+  thumbheadurl?: string
+  duration?: number
 }
 
 export interface Contact {
@@ -1090,6 +1115,7 @@ class ChatService extends EventEmitter {
             let emojiProductId: string | undefined
             let quotedContent: string | undefined
             let quotedSender: string | undefined
+            let quotedImageMd5: string | undefined
             let imageMd5: string | undefined
             let imageDatName: string | undefined
             let videoMd5: string | undefined
@@ -1115,6 +1141,7 @@ class ChatService extends EventEmitter {
               const quoteInfo = this.parseQuoteMessage(content)
               quotedContent = quoteInfo.content
               quotedSender = quoteInfo.sender
+              quotedImageMd5 = quoteInfo.imageMd5
             }
 
             // 解析文件消息 (localType === 49 且 XML 中 type=6)
@@ -1128,6 +1155,16 @@ class ChatService extends EventEmitter {
               fileSize = fileInfo.fileSize
               fileExt = fileInfo.fileExt
               fileMd5 = fileInfo.fileMd5
+            }
+
+            // 解析聊天记录 (localType === 49 且 XML 中 type=19，或者直接检查 XML type=19)
+            let chatRecordList: ChatRecordItem[] | undefined
+            if (content) {
+              // 先检查 XML 中是否有 type=19
+              const xmlType = this.extractXmlValue(content, 'type')
+              if (xmlType === '19' || localType === 49) {
+                chatRecordList = this.parseChatHistory(content)
+              }
             }
 
             const parsedContent = this.parseMessageContent(content, localType)
@@ -1147,6 +1184,7 @@ class ChatService extends EventEmitter {
               productId: emojiProductId,
               quotedContent,
               quotedSender,
+              quotedImageMd5,
               imageMd5,
               imageDatName,
               videoMd5,
@@ -1154,7 +1192,8 @@ class ChatService extends EventEmitter {
               fileName,
               fileSize,
               fileExt,
-              fileMd5
+              fileMd5,
+              chatRecordList
             })
           }
         } catch (e: any) {
@@ -1211,6 +1250,286 @@ class ChatService extends EventEmitter {
   }
 
   /**
+   * 根据日期获取消息（用于日期跳转）
+   * @param sessionId 会话ID
+   * @param targetTimestamp 目标日期的 Unix 时间戳（秒）
+   * @param limit 返回消息数量
+   * @returns 返回目标日期当天或之后最近的消息列表
+   */
+  async getMessagesByDate(
+    sessionId: string,
+    targetTimestamp: number,
+    limit: number = 50
+  ): Promise<{ success: boolean; messages?: Message[]; targetIndex?: number; error?: string }> {
+    try {
+      if (!this.dbDir) {
+        const connectResult = await this.connect()
+        if (!connectResult.success) {
+          return { success: false, error: connectResult.error || '数据库未连接' }
+        }
+      }
+
+      const myWxid = this.configService.get('myWxid')
+      const cleanedMyWxid = myWxid ? this.cleanAccountDirName(myWxid) : ''
+
+      const dbTablePairs = this.findSessionTables(sessionId)
+      if (dbTablePairs.length === 0) {
+        return { success: false, error: '未找到该会话的消息表' }
+      }
+
+      // 计算目标日期的开始时间戳（当天 00:00:00）
+      const targetDate = new Date(targetTimestamp * 1000)
+      targetDate.setHours(0, 0, 0, 0)
+      const dayStartTimestamp = Math.floor(targetDate.getTime() / 1000)
+
+      // 从所有数据库查找目标日期或之后的第一条消息
+      let allMessages: Message[] = []
+
+      for (const { db, tableName, dbPath } of dbTablePairs) {
+        try {
+          const hasName2IdTable = this.checkTableExists(db, 'Name2Id')
+
+          let myRowId: number | null = null
+          if (myWxid && hasName2IdTable) {
+            const cacheKeyOriginal = `${dbPath}:${myWxid}`
+            const cachedRowIdOriginal = this.myRowIdCache.get(cacheKeyOriginal)
+
+            if (cachedRowIdOriginal !== undefined) {
+              myRowId = cachedRowIdOriginal
+            } else {
+              const row = db.prepare('SELECT rowid FROM Name2Id WHERE user_name = ?').get(myWxid) as any
+              if (row?.rowid) {
+                myRowId = row.rowid
+                this.myRowIdCache.set(cacheKeyOriginal, myRowId)
+              } else if (cleanedMyWxid && cleanedMyWxid !== myWxid) {
+                const cacheKeyCleaned = `${dbPath}:${cleanedMyWxid}`
+                const cachedRowIdCleaned = this.myRowIdCache.get(cacheKeyCleaned)
+
+                if (cachedRowIdCleaned !== undefined) {
+                  myRowId = cachedRowIdCleaned
+                } else {
+                  const row2 = db.prepare('SELECT rowid FROM Name2Id WHERE user_name = ?').get(cleanedMyWxid) as any
+                  myRowId = row2?.rowid ?? null
+                  this.myRowIdCache.set(cacheKeyCleaned, myRowId)
+                }
+              } else {
+                this.myRowIdCache.set(cacheKeyOriginal, null)
+              }
+            }
+          }
+
+          // 查询目标日期或之后的消息，按时间升序获取
+          let sql: string
+          let rows: any[]
+
+          if (hasName2IdTable && myRowId !== null) {
+            sql = `SELECT m.*, 
+                   CASE WHEN m.real_sender_id = ? THEN 1 ELSE 0 END AS computed_is_send,
+                   n.user_name AS sender_username
+                   FROM ${tableName} m
+                   LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid
+                   WHERE m.create_time >= ?
+                   ORDER BY m.create_time ASC, m.sort_seq ASC
+                   LIMIT ?`
+            rows = db.prepare(sql).all(myRowId, dayStartTimestamp, limit * 2) as any[]
+          } else if (hasName2IdTable) {
+            sql = `SELECT m.*, n.user_name AS sender_username
+                   FROM ${tableName} m
+                   LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid
+                   WHERE m.create_time >= ?
+                   ORDER BY m.create_time ASC, m.sort_seq ASC
+                   LIMIT ?`
+            rows = db.prepare(sql).all(dayStartTimestamp, limit * 2) as any[]
+          } else {
+            sql = `SELECT * FROM ${tableName} 
+                   WHERE create_time >= ?
+                   ORDER BY create_time ASC, sort_seq ASC
+                   LIMIT ?`
+            rows = db.prepare(sql).all(dayStartTimestamp, limit * 2) as any[]
+          }
+
+          // 处理消息
+          for (const row of rows) {
+            const content = this.decodeMessageContent(row.message_content, row.compress_content)
+            const localType = row.local_type || row.type || 1
+            const isSend = row.computed_is_send ?? row.is_send ?? null
+
+            let emojiCdnUrl: string | undefined
+            let emojiMd5: string | undefined
+            let emojiProductId: string | undefined
+            let quotedContent: string | undefined
+            let quotedSender: string | undefined
+            let quotedImageMd5: string | undefined
+            let imageMd5: string | undefined
+            let imageDatName: string | undefined
+            let videoMd5: string | undefined
+            let voiceDuration: number | undefined
+
+            if (localType === 47 && content) {
+              const emojiInfo = this.parseEmojiInfo(content)
+              emojiCdnUrl = emojiInfo.cdnUrl
+              emojiMd5 = emojiInfo.md5
+              emojiProductId = emojiInfo.productId
+            } else if (localType === 3 && content) {
+              const imageInfo = this.parseImageInfo(content)
+              imageMd5 = imageInfo.md5
+              imageDatName = this.parseImageDatNameFromRow(row)
+            } else if (localType === 43 && content) {
+              videoMd5 = this.parseVideoMd5(content)
+            } else if (localType === 34 && content) {
+              voiceDuration = this.parseVoiceDuration(content)
+            } else if (localType === 244813135921 || (content && content.includes('<type>57</type>'))) {
+              const quoteInfo = this.parseQuoteMessage(content)
+              quotedContent = quoteInfo.content
+              quotedSender = quoteInfo.sender
+              quotedImageMd5 = quoteInfo.imageMd5
+            }
+
+            let fileName: string | undefined
+            let fileSize: number | undefined
+            let fileExt: string | undefined
+            let fileMd5: string | undefined
+            if (localType === 49 && content) {
+              const fileInfo = this.parseFileInfo(content)
+              fileName = fileInfo.fileName
+              fileSize = fileInfo.fileSize
+              fileExt = fileInfo.fileExt
+              fileMd5 = fileInfo.fileMd5
+            }
+
+            // 解析聊天记录 (检查 XML type=19)
+            let chatRecordList: ChatRecordItem[] | undefined
+            if (content) {
+              const xmlType = this.extractXmlValue(content, 'type')
+              if (xmlType === '19' || localType === 49) {
+                chatRecordList = this.parseChatHistory(content)
+              }
+            }
+
+            const parsedContent = this.parseMessageContent(content, localType)
+
+            allMessages.push({
+              localId: row.local_id || 0,
+              serverId: row.server_id || 0,
+              localType,
+              createTime: row.create_time || 0,
+              sortSeq: row.sort_seq || 0,
+              isSend,
+              senderUsername: row.sender_username || null,
+              parsedContent,
+              rawContent: content,
+              emojiCdnUrl,
+              emojiMd5,
+              productId: emojiProductId,
+              quotedContent,
+              quotedSender,
+              quotedImageMd5,
+              imageMd5,
+              imageDatName,
+              videoMd5,
+              voiceDuration,
+              fileName,
+              fileSize,
+              fileExt,
+              fileMd5,
+              chatRecordList
+            })
+          }
+        } catch (e) {
+          console.error('ChatService: 按日期查询消息失败:', e)
+        }
+      }
+
+      // 按时间升序排序
+      allMessages.sort((a, b) => a.createTime - b.createTime || a.sortSeq - b.sortSeq)
+
+      // 去重
+      const seen = new Set<string>()
+      allMessages = allMessages.filter(msg => {
+        const key = `${msg.serverId}-${msg.localId}-${msg.createTime}-${msg.sortSeq}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+
+      // 取前 limit 条
+      const messages = allMessages.slice(0, limit)
+
+      if (messages.length === 0) {
+        return { success: true, messages: [], targetIndex: -1 }
+      }
+
+      return { success: true, messages, targetIndex: 0 }
+    } catch (e) {
+      console.error('ChatService: 按日期获取消息失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
+   * 获取指定月份中有消息的日期列表
+   * @param sessionId 会话ID
+   * @param year 年份
+   * @param month 月份 (1-12)
+   * @returns 有消息的日期字符串列表 (YYYY-MM-DD)
+   */
+  async getDatesWithMessages(
+    sessionId: string,
+    year: number,
+    month: number
+  ): Promise<{ success: boolean; dates?: string[]; error?: string }> {
+    try {
+      if (!this.dbDir) {
+        const connectResult = await this.connect()
+        if (!connectResult.success) {
+          return { success: false, error: connectResult.error || '数据库未连接' }
+        }
+      }
+
+      const dbTablePairs = this.findSessionTables(sessionId)
+      if (dbTablePairs.length === 0) {
+        return { success: true, dates: [] }
+      }
+
+      // 计算该月的起止时间戳
+      // 注意：month 参数是 1-12，但 Date 构造函数用 0-11
+      const startDate = new Date(year, month - 1, 1, 0, 0, 0)
+      const endDate = new Date(year, month, 0, 23, 59, 59, 999) // 下个月第0天即本月最后一天
+
+      const startTimestamp = Math.floor(startDate.getTime() / 1000)
+      const endTimestamp = Math.floor(endDate.getTime() / 1000)
+
+      const datesSet = new Set<string>()
+
+      for (const { db, tableName } of dbTablePairs) {
+        try {
+          // 只查询 create_time 字段以优化性能
+          const sql = `SELECT create_time FROM ${tableName} 
+                       WHERE create_time BETWEEN ? AND ?`
+
+          const rows = db.prepare(sql).all(startTimestamp, endTimestamp) as { create_time: number }[]
+
+          for (const row of rows) {
+            const date = new Date(row.create_time * 1000)
+            const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+            datesSet.add(dateStr)
+          }
+        } catch (e) {
+          console.error(`ChatService: 查询表 ${tableName} 日期失败`, e)
+        }
+      }
+
+      // 排序
+      const sortedDates = Array.from(datesSet).sort()
+
+      return { success: true, dates: sortedDates }
+    } catch (e) {
+      console.error('ChatService: 获取有消息的日期失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
    * 解析消息内容
    */
   private parseMessageContent(content: string, localType: number): string {
@@ -1254,11 +1573,20 @@ class ChatService extends EventEmitter {
         const title = this.extractXmlValue(content, 'title')
         return title || '[引用消息]'
       default:
-        // 检查是否是 type=57 的引用消息
-        if (xmlType === '57') {
-          const title = this.extractXmlValue(content, 'title')
-          return title || '[引用消息]'
+        // 对于未知的 localType，检查 XML type 来判断消息类型
+        if (xmlType) {
+          // 如果有 XML type，尝试按 type 49 的逻辑解析
+          if (xmlType === '2000' || xmlType === '5' || xmlType === '6' || xmlType === '19' || 
+              xmlType === '33' || xmlType === '36' || xmlType === '49' || xmlType === '57') {
+            return this.parseType49(content)
+          }
+          // type=57 的引用消息
+          if (xmlType === '57') {
+            const title = this.extractXmlValue(content, 'title')
+            return title || '[引用消息]'
+          }
         }
+        // 其他情况
         if (content.length > 200) {
           return this.getMessageTypeLabel(localType)
         }
@@ -1287,6 +1615,8 @@ class ChatService extends EventEmitter {
           return `[链接] ${title}`
         case '6':
           return `[文件] ${title}`
+        case '19':
+          return `[聊天记录] ${title}`
         case '33':
         case '36':
           return `[小程序] ${title}`
@@ -1298,6 +1628,80 @@ class ChatService extends EventEmitter {
       }
     }
     return '[消息]'
+  }
+
+  /**
+   * 解析合并转发的聊天记录 (Type 19)
+   */
+  private parseChatHistory(content: string): ChatRecordItem[] | undefined {
+    try {
+      const type = this.extractXmlValue(content, 'type')
+      if (type !== '19') return undefined
+
+      // 提取 recorditem 中的 CDATA
+      // CDATA 格式: <recorditem><![CDATA[ ... ]]></recorditem>
+      const match = /<recorditem>[\s\S]*?<!\[CDATA\[([\s\S]*?)\]\]>[\s\S]*?<\/recorditem>/.exec(content)
+      if (!match) return undefined
+
+      const innerXml = match[1]
+
+      const items: ChatRecordItem[] = []
+      // 使用更宽松的正则匹配 dataitem
+      const itemRegex = /<dataitem\s+(.*?)>([\s\S]*?)<\/dataitem>/g
+      let itemMatch
+
+      while ((itemMatch = itemRegex.exec(innerXml)) !== null) {
+        const attrs = itemMatch[1]
+        const body = itemMatch[2]
+
+        const datatypeMatch = /datatype="(\d+)"/.exec(attrs)
+        const datatype = datatypeMatch ? parseInt(datatypeMatch[1]) : 0
+
+        const sourcename = this.extractXmlValue(body, 'sourcename')
+        const sourcetime = this.extractXmlValue(body, 'sourcetime')
+        const sourceheadurl = this.extractXmlValue(body, 'sourceheadurl')
+        const datadesc = this.extractXmlValue(body, 'datadesc')
+        const datatitle = this.extractXmlValue(body, 'datatitle')
+        const fileext = this.extractXmlValue(body, 'fileext')
+        const datasize = parseInt(this.extractXmlValue(body, 'datasize') || '0')
+        const messageuuid = this.extractXmlValue(body, 'messageuuid')
+
+        // 提取媒体信息
+        const dataurl = this.extractXmlValue(body, 'dataurl')
+        const datathumburl = this.extractXmlValue(body, 'datathumburl') || this.extractXmlValue(body, 'thumburl')
+        const datacdnurl = this.extractXmlValue(body, 'datacdnurl') || this.extractXmlValue(body, 'cdnurl')
+        const aeskey = this.extractXmlValue(body, 'aeskey') || this.extractXmlValue(body, 'qaeskey')
+        const md5 = this.extractXmlValue(body, 'md5') || this.extractXmlValue(body, 'datamd5')
+        const imgheight = parseInt(this.extractXmlValue(body, 'imgheight') || '0')
+        const imgwidth = parseInt(this.extractXmlValue(body, 'imgwidth') || '0')
+        const duration = parseInt(this.extractXmlValue(body, 'duration') || '0')
+
+        items.push({
+          datatype,
+          sourcename,
+          sourcetime,
+          sourceheadurl,
+          datadesc: this.decodeHtmlEntities(datadesc),
+          datatitle: this.decodeHtmlEntities(datatitle),
+          fileext,
+          datasize,
+          messageuuid,
+          dataurl: this.decodeHtmlEntities(dataurl),
+          datathumburl: this.decodeHtmlEntities(datathumburl),
+          datacdnurl: this.decodeHtmlEntities(datacdnurl),
+          aeskey: this.decodeHtmlEntities(aeskey),
+          md5,
+          imgheight,
+          imgwidth,
+          duration
+        })
+      }
+
+      return items.length > 0 ? items : undefined
+    } catch (e) {
+      console.error('ChatService: 解析聊天记录失败:', e)
+      return undefined
+    }
   }
 
   /**
@@ -1495,7 +1899,7 @@ class ChatService extends EventEmitter {
   /**
    * 解析引用消息
    */
-  private parseQuoteMessage(content: string): { content?: string; sender?: string } {
+  private parseQuoteMessage(content: string): { content?: string; sender?: string; imageMd5?: string } {
     try {
       // 提取 refermsg 部分
       const referMsgStart = content.indexOf('<refermsg>')
@@ -1514,9 +1918,11 @@ class ChatService extends EventEmitter {
         displayName = ''
       }
 
-      // 提取引用内容
-      const referContent = this.extractXmlValue(referMsgXml, 'content')
+      // 提取引用内容并解码
+      let referContent = this.extractXmlValue(referMsgXml, 'content')
+      referContent = this.decodeHtmlEntities(referContent)
       const referType = this.extractXmlValue(referMsgXml, 'type')
+      let imageMd5: string | undefined
 
       // 根据类型渲染引用内容
       let displayContent = referContent
@@ -1527,6 +1933,9 @@ class ChatService extends EventEmitter {
           break
         case '3':
           displayContent = '[图片]'
+          // 尝试从引用的内容 XML 中提取图片 MD5
+          const innerMd5 = this.extractXmlValue(referContent, 'md5')
+          imageMd5 = innerMd5 || undefined
           break
         case '34':
           displayContent = '[语音]'
@@ -1538,7 +1947,8 @@ class ChatService extends EventEmitter {
           displayContent = '[动画表情]'
           break
         case '49':
-          displayContent = '[链接]'
+          const appTitle = this.extractXmlValue(referContent, 'title')
+          displayContent = appTitle || '[链接]'
           break
         case '42':
           displayContent = '[名片]'
@@ -1556,7 +1966,8 @@ class ChatService extends EventEmitter {
 
       return {
         content: displayContent,
-        sender: displayName || undefined
+        sender: displayName || undefined,
+        imageMd5
       }
     } catch {
       return {}
@@ -3100,7 +3511,10 @@ class ChatService extends EventEmitter {
   /**
    * 获取单条消息
    */
-  private getMessageByLocalId(sessionId: string, localId: number): Message | null {
+  /**
+   * 获取单条消息
+   */
+  public async getMessageByLocalId(sessionId: string, localId: number): Promise<{ success: boolean; message?: Message; error?: string }> {
     const dbTablePairs = this.findSessionTables(sessionId)
 
     for (const { db, tableName } of dbTablePairs) {
@@ -3111,15 +3525,22 @@ class ChatService extends EventEmitter {
           const localType = row.local_type || row.type || 1
 
           return {
-            localId: row.local_id || 0,
-            serverId: row.server_id || 0,
-            localType,
-            createTime: row.create_time || 0,
-            sortSeq: row.sort_seq || 0,
-            isSend: row.is_send ?? null,
-            senderUsername: row.sender_username || null,
-            parsedContent: this.parseMessageContent(content, localType),
-            rawContent: content
+            success: true,
+            message: {
+              localId: row.local_id || 0,
+              serverId: row.server_id || 0,
+              localType,
+              createTime: row.create_time || 0,
+              sortSeq: row.sort_seq || 0,
+              isSend: row.is_send ?? null,
+              senderUsername: row.sender_username || null,
+              parsedContent: this.parseMessageContent(content, localType),
+              rawContent: content,
+              chatRecordList: content ? (() => {
+                const xmlType = this.extractXmlValue(content, 'type')
+                return (xmlType === '19' || localType === 49) ? this.parseChatHistory(content) : undefined
+              })() : undefined
+            }
           }
         }
       } catch (e) {
@@ -3127,7 +3548,7 @@ class ChatService extends EventEmitter {
       }
     }
 
-    return null
+    return { success: false, error: 'Message not found' }
   }
 
   /**
@@ -3144,9 +3565,9 @@ class ChatService extends EventEmitter {
       // 如果没有传入 createTime，尝试从数据库获取
       let msgCreateTime = createTime
       if (!msgCreateTime) {
-        const msg = this.getMessageByLocalId(sessionId, localId)
-        if (msg) {
-          msgCreateTime = msg.createTime
+        const result = await this.getMessageByLocalId(sessionId, localId)
+        if (result.success && result.message) {
+          msgCreateTime = result.message.createTime
         }
       }
 
@@ -3564,6 +3985,7 @@ class ChatService extends EventEmitter {
           let emojiProductId: string | undefined
           let quotedContent: string | undefined
           let quotedSender: string | undefined
+          let quotedImageMd5: string | undefined
           let imageMd5: string | undefined
           let imageDatName: string | undefined
           let videoMd5: string | undefined
@@ -3593,10 +4015,19 @@ class ChatService extends EventEmitter {
             fileSize = fileInfo.fileSize
             fileExt = fileInfo.fileExt
             fileMd5 = fileInfo.fileMd5
+          }
+
+          let chatRecordList: ChatRecordItem[] | undefined
+          if (content) {
+            const xmlType = this.extractXmlValue(content, 'type')
+            if (xmlType === '19' || localType === 49) {
+              chatRecordList = this.parseChatHistory(content)
+            }
           } else if (localType === 244813135921 || (content && content.includes('<type>57</type>'))) {
             const quoteInfo = this.parseQuoteMessage(content)
             quotedContent = quoteInfo.content
             quotedSender = quoteInfo.sender
+            quotedImageMd5 = quoteInfo.imageMd5
           }
 
           const parsedContent = this.parseMessageContent(content, localType)
@@ -3616,6 +4047,7 @@ class ChatService extends EventEmitter {
             productId: emojiProductId,
             quotedContent,
             quotedSender,
+            quotedImageMd5,
             imageMd5,
             imageDatName,
             videoMd5,
@@ -3623,7 +4055,8 @@ class ChatService extends EventEmitter {
             fileName,
             fileSize,
             fileExt,
-            fileMd5
+            fileMd5,
+            chatRecordList
           })
         }
       }

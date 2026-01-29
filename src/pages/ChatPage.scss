@@ -338,6 +338,12 @@
               animation: spin 1s linear infinite;
             }
           }
+
+          // 日期选择器包装器
+          .date-picker-wrapper {
+            position: relative;
+            -webkit-app-region: no-drag;
+          }
         }
       }
 
@@ -915,6 +921,7 @@
     0% {
       background-position: 200% 0;
     }
+
     100% {
       background-position: -200% 0;
     }
@@ -926,7 +933,7 @@
 
   &.loading {
     background: var(--bg-tertiary);
-    
+
     .avatar-skeleton {
       z-index: 1;
     }
@@ -1298,13 +1305,13 @@
     font-weight: 600;
     color: white;
   }
-  
+
   .avatar-skeleton-wrapper {
     width: 100%;
     height: 100%;
     position: relative;
     background: var(--bg-tertiary);
-    
+
     .avatar-skeleton {
       position: absolute;
       inset: 0;
@@ -1630,17 +1637,17 @@
   }
 }
 
-// 适配发送/接收样式
+// 适配发送/接收样式（跟随主题色）
 .message-bubble.sent .link-message {
-  background: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
 
   .link-title {
-    color: #333;
+    color: var(--text-primary);
   }
 
   .link-desc {
-    color: #666;
+    color: var(--text-secondary);
   }
 }
 
@@ -1707,6 +1714,73 @@
       color: var(--text-tertiary);
     }
   }
+
+// 合并转发聊天记录卡片（复用 link-message 结构，仅做内容布局上的补充）
+.chat-record-message {
+  .link-header {
+    padding-bottom: 4px;
+  }
+
+  .chat-record-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .chat-record-meta-line {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .chat-record-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 70px;
+    overflow: hidden;
+  }
+
+  .chat-record-item {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .source-name {
+    color: var(--text-primary);
+    font-weight: 500;
+    margin-right: 4px;
+  }
+
+  .chat-record-more {
+    font-size: 12px;
+    color: var(--primary);
+  }
+
+  .chat-record-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .chat-record-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: var(--primary-gradient);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    flex-shrink: 0;
+  }
+}
 }
 
 // 发送的文件消息样式
@@ -1740,7 +1814,7 @@
 
   .transfer-icon {
     flex-shrink: 0;
-    
+
     svg {
       width: 32px;
       height: 32px;
@@ -1776,7 +1850,7 @@
   font-size: 12px;
   color: var(--text-tertiary);
   margin-bottom: 4px;
-  
+
   .sender-skeleton {
     display: inline-block;
     width: 60px;
@@ -1797,6 +1871,41 @@
   border-radius: 4px;
   font-size: 13px;
 
+  .quoted-message-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 120px;
+  }
+
+  .quoted-text-container {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .quoted-image-container {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+
+    .quoted-image-thumb {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      cursor: pointer;
+      transition: opacity 0.2s;
+
+      &:hover {
+        opacity: 0.8;
+      }
+    }
+  }
+
   .quoted-sender {
     color: var(--primary);
     font-weight: 500;
@@ -1809,6 +1918,7 @@
 
   .quoted-text {
     color: var(--text-secondary);
+    word-break: break-all;
   }
 }
 
@@ -3121,6 +3231,221 @@ video::-webkit-media-controls-fullscreen-button {
   }
 }
 
+.date-picker-dropdown {
+  position: fixed;
+  width: 320px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.1);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  z-index: 9999;
+  animation: dropdownFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+
+  .calendar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px;
+    margin-bottom: -4px;
+
+    .current-month {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .calendar-nav-btn {
+      width: 28px;
+      height: 28px;
+      border: none;
+      background: transparent;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s;
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      &:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+      }
+    }
+  }
+
+  .calendar-weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    text-align: center;
+    margin-bottom: 4px;
+
+    .weekday {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      padding: 4px 0;
+    }
+  }
+
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    row-gap: 4px;
+    position: relative;
+    min-height: 200px; // 确保至少有一定高度
+
+    .calendar-loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(2px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      border-radius: 8px;
+      color: var(--primary);
+    }
+
+    .calendar-day {
+      width: 36px;
+      height: 36px;
+      margin: 0 auto;
+      border: none;
+      background: transparent;
+      border-radius: 50%;
+      font-size: 13px;
+      color: var(--text-primary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      position: relative;
+
+      &.empty {
+        cursor: default;
+        pointer-events: none;
+      }
+
+      &:hover:not(:disabled):not(.selected) {
+        background: var(--bg-hover);
+      }
+
+      &.today {
+        color: var(--primary);
+        font-weight: 600;
+
+        &::after {
+          content: '';
+          position: absolute;
+          bottom: 4px;
+          width: 4px;
+          height: 4px;
+          border-radius: 50%;
+          background: var(--primary);
+        }
+
+        &.selected {
+          color: #fff;
+
+          &::after {
+            background: #fff;
+          }
+        }
+      }
+
+      &.selected {
+        background: var(--primary);
+        color: #fff;
+        box-shadow: 0 2px 8px var(--primary-light);
+      }
+
+      &.disabled {
+        color: var(--text-tertiary);
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+  }
+
+  .calendar-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+
+    .date-jump-today {
+      padding: 8px 12px;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+        border-color: var(--text-tertiary);
+      }
+    }
+
+    .date-jump-confirm {
+      flex: 1;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 8px;
+      background: var(--primary-gradient);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s;
+      box-shadow: 0 2px 8px var(--primary-light);
+
+      &:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px var(--primary-light);
+      }
+
+      &:active:not(:disabled) {
+        transform: translateY(0);
+      }
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .spin {
+        animation: spin 1s linear infinite;
+      }
+    }
+  }
+}
+
 @keyframes modalFadeIn {
   from {
     opacity: 0;
@@ -3132,3 +3457,76 @@ video::-webkit-media-controls-fullscreen-button {
     transform: translateY(0);
   }
 }
+
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* 以下这块旧样式原本强行把聊天记录气泡背景设为白色，会打破主题适配。现在只保留排版，不再设置 background。 */
+.chat-record-message {
+  min-width: 240px;
+  max-width: 300px;
+  padding: 12px;
+}
+
+/* If message-bubble handles background, we don't need background here. 
+   Currently message-bubble has padding. bubble-content usually wraps content.
+*/
+.chat-page .message-bubble .chat-record-message {
+  /* Override bubble padding if needed? No, keep it inside. */
+  
+  .chat-record-title {
+    font-size: 15px;
+    font-weight: 500;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 6px;
+  }
+
+  .chat-record-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    
+    .chat-record-item {
+       white-space: nowrap;
+       overflow: hidden;
+       text-overflow: ellipsis;
+       line-height: 1.4;
+       
+       .source-name {
+         color: var(--text-tertiary);
+         margin-right: 4px;
+       }
+    }
+    
+    .chat-record-desc {
+       white-space: pre-wrap;
+       line-height: 1.4;
+    }
+    
+    .chat-record-more {
+       color: var(--text-tertiary);
+       margin-top: 2px;
+    }
+  }
+  
+  .chat-record-footer {
+     margin-top: 8px;
+     padding-top: 6px;
+     border-top: 1px solid var(--border-color);
+     font-size: 11px;
+     color: var(--text-tertiary);
+  }
+}
+

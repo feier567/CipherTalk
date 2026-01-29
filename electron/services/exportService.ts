@@ -3,7 +3,9 @@ import * as path from 'path'
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { ConfigService } from './config'
+import { voiceTranscribeService } from './voiceTranscribeService'
 import * as XLSX from 'xlsx'
+import { HtmlExportGenerator } from './htmlExportGenerator'
 
 // ChatLab 0.0.2 格式类型定义
 interface ChatLabHeader {
@@ -44,6 +46,16 @@ interface ChatLabMessage {
   content: string | null
   platformMessageId?: string
   replyToMessageId?: string
+  chatRecords?: ChatRecordItem[]  // 嵌套的聊天记录
+}
+
+interface ChatRecordItem {
+  sender: string
+  accountName: string
+  timestamp: number
+  type: number
+  content: string
+  avatar?: string
 }
 
 interface ChatLabExport {
@@ -331,19 +343,19 @@ class ExportService {
       if (contact) {
         const displayName = contact.remark || contact.nick_name || contact.alias || username
         let avatarUrl: string | undefined
-        
+
         // 优先使用 URL 头像
         if (hasBigHeadUrl && contact.big_head_url) {
           avatarUrl = contact.big_head_url
         } else if (hasSmallHeadUrl && contact.small_head_url) {
           avatarUrl = contact.small_head_url
         }
-        
+
         // 如果没有 URL 头像，尝试从 head_image.db 获取 base64
         if (!avatarUrl) {
           avatarUrl = await this.getAvatarFromHeadImageDb(username)
         }
-        
+
         return { displayName, avatarUrl }
       }
     } catch { }
@@ -375,18 +387,24 @@ class ExportService {
    * 转换微信消息类型到 ChatLab 类型
    */
   private convertMessageType(localType: number, content: string): number {
-    // 特殊处理 type 49（链接/文件/小程序等）
-    if (localType === 49) {
-      const typeMatch = /<type>(\d+)<\/type>/i.exec(content)
-      if (typeMatch) {
-        const subType = parseInt(typeMatch[1])
-        switch (subType) {
-          case 6: return 4   // 文件 -> FILE
-          case 33:
-          case 36: return 24 // 小程序 -> SHARE
-          case 57: return 25 // 引用回复 -> REPLY
-          default: return 7  // 链接 -> LINK
-        }
+    // 检查 XML 中的 type 标签（支持大 localType 的情况）
+    const xmlTypeMatch = /<type>(\d+)<\/type>/i.exec(content)
+    const xmlType = xmlTypeMatch ? parseInt(xmlTypeMatch[1]) : null
+    
+    // 特殊处理 type 49 或 XML type
+    if (localType === 49 || xmlType) {
+      const subType = xmlType || 0
+      switch (subType) {
+        case 6: return 4   // 文件 -> FILE
+        case 19: return 7  // 聊天记录 -> LINK (ChatLab 没有专门的聊天记录类型)
+        case 33:
+        case 36: return 24 // 小程序 -> SHARE
+        case 57: return 25 // 引用回复 -> REPLY
+        case 2000: return 99 // 转账 -> OTHER (ChatLab 没有转账类型)
+        case 5:
+        case 49: return 7  // 链接 -> LINK
+        default: 
+          if (xmlType) return 7 // 有 XML type 但未知，默认为链接
       }
     }
     return MESSAGE_TYPE_MAP[localType] ?? 99 // 未知类型 -> OTHER
@@ -460,29 +478,86 @@ class ExportService {
   /**
    * 解析消息内容为可读文本
    */
-  private parseMessageContent(content: string, localType: number): string | null {
+  private parseMessageContent(content: string, localType: number, sessionId?: string, createTime?: number): string | null {
     if (!content) return null
+
+    // 检查 XML 中的 type 标签（支持大 localType 的情况）
+    const xmlTypeMatch = /<type>(\d+)<\/type>/i.exec(content)
+    const xmlType = xmlTypeMatch ? xmlTypeMatch[1] : null
 
     switch (localType) {
       case 1: // 文本
         return this.stripSenderPrefix(content)
       case 3: return '[图片]'
-      case 34: return '[语音消息]'
+      case 34: {
+        // 语音消息 - 尝试获取转写文字
+        if (sessionId && createTime) {
+          const transcript = voiceTranscribeService.getCachedTranscript(sessionId, createTime)
+          if (transcript) {
+            return `[语音消息] ${transcript}`
+          }
+        }
+        return '[语音消息]'
+      }
       case 42: return '[名片]'
       case 43: return '[视频]'
       case 47: return '[动画表情]'
       case 48: return '[位置]'
       case 49: {
         const title = this.extractXmlValue(content, 'title')
-        return title || '[链接]'
+        const type = this.extractXmlValue(content, 'type')
+        
+        // 转账消息特殊处理
+        if (type === '2000') {
+          const feedesc = this.extractXmlValue(content, 'feedesc')
+          const payMemo = this.extractXmlValue(content, 'pay_memo')
+          if (feedesc) {
+            return payMemo ? `[转账] ${feedesc} ${payMemo}` : `[转账] ${feedesc}`
+          }
+          return '[转账]'
+        }
+        
+        if (type === '6') return title ? `[文件] ${title}` : '[文件]'
+        if (type === '19') return title ? `[聊天记录] ${title}` : '[聊天记录]'
+        if (type === '33' || type === '36') return title ? `[小程序] ${title}` : '[小程序]'
+        if (type === '57') return title || '[引用消息]'
+        if (type === '5' || type === '49') return title ? `[链接] ${title}` : '[链接]'
+        return title ? `[链接] ${title}` : '[链接]'
       }
       case 50: return '[通话]'
       case 10000: return this.cleanSystemMessage(content)
+      case 244813135921: {
+        // 引用消息
+        const title = this.extractXmlValue(content, 'title')
+        return title || '[引用消息]'
+      }
       default:
-        if (content.includes('<type>57</type>')) {
+        // 对于未知的 localType，检查 XML type 来判断消息类型
+        if (xmlType) {
           const title = this.extractXmlValue(content, 'title')
-          return title || '[引用消息]'
+          
+          // 转账消息
+          if (xmlType === '2000') {
+            const feedesc = this.extractXmlValue(content, 'feedesc')
+            const payMemo = this.extractXmlValue(content, 'pay_memo')
+            if (feedesc) {
+              return payMemo ? `[转账] ${feedesc} ${payMemo}` : `[转账] ${feedesc}`
+            }
+            return '[转账]'
+          }
+          
+          // 其他类型
+          if (xmlType === '6') return title ? `[文件] ${title}` : '[文件]'
+          if (xmlType === '19') return title ? `[聊天记录] ${title}` : '[聊天记录]'
+          if (xmlType === '33' || xmlType === '36') return title ? `[小程序] ${title}` : '[小程序]'
+          if (xmlType === '57') return title || '[引用消息]'
+          if (xmlType === '5' || xmlType === '49') return title ? `[链接] ${title}` : '[链接]'
+          
+          // 有 title 就返回 title
+          if (title) return title
         }
+        
+        // 最后尝试提取文本内容
         return this.stripSenderPrefix(content) || null
     }
   }
@@ -619,6 +694,13 @@ class ExportService {
               }
             }
 
+            // 检查是否是聊天记录消息（type=19）
+            const xmlType = this.extractXmlValue(content, 'type')
+            let chatRecordList: any[] | undefined
+            if (xmlType === '19' || localType === 49) {
+              chatRecordList = this.parseChatHistory(content)
+            }
+
             allMessages.push({
               createTime,
               localType,
@@ -627,7 +709,8 @@ class ExportService {
               isSend,
               platformMessageId,
               replyToMessageId,
-              groupNickname
+              groupNickname,
+              chatRecordList
             })
 
             // 收集成员信息
@@ -662,21 +745,113 @@ class ExportService {
       })
 
       // 构建 ChatLab 格式消息
-      const chatLabMessages: ChatLabMessage[] = allMessages.map(msg => {
+      const chatLabMessages: ChatLabMessage[] = []
+      
+      for (const msg of allMessages) {
         const memberInfo = memberSet.get(msg.senderUsername) || { platformId: msg.senderUsername, accountName: msg.senderUsername }
         const message: ChatLabMessage = {
           sender: msg.senderUsername,
           accountName: memberInfo.accountName,
           timestamp: msg.createTime,
           type: this.convertMessageType(msg.localType, msg.content),
-          content: this.parseMessageContent(msg.content, msg.localType)
+          content: this.parseMessageContent(msg.content, msg.localType, sessionId, msg.createTime)
         }
+        
         // 添加可选字段
         if (msg.groupNickname) message.groupNickname = msg.groupNickname
         if (msg.platformMessageId) message.platformMessageId = msg.platformMessageId
         if (msg.replyToMessageId) message.replyToMessageId = msg.replyToMessageId
-        return message
-      })
+        
+        // 如果有聊天记录，添加为嵌套字段
+        if (msg.chatRecordList && msg.chatRecordList.length > 0) {
+          const chatRecords: ChatRecordItem[] = []
+          
+          for (const record of msg.chatRecordList) {
+            // 解析时间戳 (格式: "YYYY-MM-DD HH:MM:SS")
+            let recordTimestamp = msg.createTime
+            if (record.sourcetime) {
+              try {
+                const timeParts = record.sourcetime.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/)
+                if (timeParts) {
+                  const date = new Date(
+                    parseInt(timeParts[1]),
+                    parseInt(timeParts[2]) - 1,
+                    parseInt(timeParts[3]),
+                    parseInt(timeParts[4]),
+                    parseInt(timeParts[5]),
+                    parseInt(timeParts[6])
+                  )
+                  recordTimestamp = Math.floor(date.getTime() / 1000)
+                }
+              } catch (e) {
+                console.error('解析聊天记录时间失败:', e)
+              }
+            }
+
+            // 转换消息类型
+            let recordType = 0 // TEXT
+            let recordContent = record.datadesc || record.datatitle || ''
+            
+            switch (record.datatype) {
+              case 1:
+                recordType = 0 // TEXT
+                break
+              case 3:
+                recordType = 1 // IMAGE
+                recordContent = '[图片]'
+                break
+              case 8:
+              case 49:
+                recordType = 4 // FILE
+                recordContent = record.datatitle ? `[文件] ${record.datatitle}` : '[文件]'
+                break
+              case 34:
+                recordType = 2 // VOICE
+                recordContent = '[语音消息]'
+                break
+              case 43:
+                recordType = 3 // VIDEO
+                recordContent = '[视频]'
+                break
+              case 47:
+                recordType = 5 // EMOJI
+                recordContent = '[动画表情]'
+                break
+              default:
+                recordType = 0
+                recordContent = record.datadesc || record.datatitle || '[消息]'
+            }
+
+            const chatRecord: ChatRecordItem = {
+              sender: record.sourcename || 'unknown',
+              accountName: record.sourcename || 'unknown',
+              timestamp: recordTimestamp,
+              type: recordType,
+              content: recordContent
+            }
+            
+            // 添加头像（如果启用导出头像）
+            if (options.exportAvatars && record.sourceheadurl) {
+              chatRecord.avatar = record.sourceheadurl
+            }
+            
+            chatRecords.push(chatRecord)
+            
+            // 添加成员信息
+            if (record.sourcename && !memberSet.has(record.sourcename)) {
+              memberSet.set(record.sourcename, {
+                platformId: record.sourcename,
+                accountName: record.sourcename,
+                ...(options.exportAvatars && record.sourceheadurl && { avatar: record.sourceheadurl })
+              })
+            }
+          }
+          
+          message.chatRecords = chatRecords
+        }
+        
+        chatLabMessages.push(message)
+      }
 
       // 构建 meta
       const meta: ChatLabMeta = {
@@ -762,6 +937,158 @@ class ExportService {
       }
     }
     return undefined
+  }
+
+  /**
+   * 解析合并转发的聊天记录 (Type 19)
+   */
+  private parseChatHistory(content: string): any[] | undefined {
+    try {
+      const type = this.extractXmlValue(content, 'type')
+      if (type !== '19') return undefined
+
+      // 提取 recorditem 中的 CDATA
+      const match = /<recorditem>[\s\S]*?<!\[CDATA\[([\s\S]*?)\]\]>[\s\S]*?<\/recorditem>/.exec(content)
+      if (!match) return undefined
+
+      const innerXml = match[1]
+      const items: any[] = []
+      const itemRegex = /<dataitem\s+(.*?)>([\s\S]*?)<\/dataitem>/g
+      let itemMatch
+
+      while ((itemMatch = itemRegex.exec(innerXml)) !== null) {
+        const attrs = itemMatch[1]
+        const body = itemMatch[2]
+
+        const datatypeMatch = /datatype="(\d+)"/.exec(attrs)
+        const datatype = datatypeMatch ? parseInt(datatypeMatch[1]) : 0
+
+        const sourcename = this.extractXmlValue(body, 'sourcename')
+        const sourcetime = this.extractXmlValue(body, 'sourcetime')
+        const sourceheadurl = this.extractXmlValue(body, 'sourceheadurl')
+        const datadesc = this.extractXmlValue(body, 'datadesc')
+        const datatitle = this.extractXmlValue(body, 'datatitle')
+        const fileext = this.extractXmlValue(body, 'fileext')
+        const datasize = parseInt(this.extractXmlValue(body, 'datasize') || '0')
+
+        items.push({
+          datatype,
+          sourcename,
+          sourcetime,
+          sourceheadurl,
+          datadesc: this.decodeHtmlEntities(datadesc),
+          datatitle: this.decodeHtmlEntities(datatitle),
+          fileext,
+          datasize
+        })
+      }
+
+      return items.length > 0 ? items : undefined
+    } catch (e) {
+      console.error('ExportService: 解析聊天记录失败:', e)
+      return undefined
+    }
+  }
+
+  /**
+   * 解码 HTML 实体
+   */
+  private decodeHtmlEntities(text: string): string {
+    if (!text) return ''
+    return text
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&apos;/g, "'")
+  }
+
+  /**
+   * 格式化聊天记录为 JSON 导出格式
+   */
+  private formatChatRecordsForJson(chatRecordList: any[], options: ExportOptions): any[] {
+    return chatRecordList.map(record => {
+      // 解析时间戳
+      let timestamp = 0
+      if (record.sourcetime) {
+        try {
+          const timeParts = record.sourcetime.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/)
+          if (timeParts) {
+            const date = new Date(
+              parseInt(timeParts[1]),
+              parseInt(timeParts[2]) - 1,
+              parseInt(timeParts[3]),
+              parseInt(timeParts[4]),
+              parseInt(timeParts[5]),
+              parseInt(timeParts[6])
+            )
+            timestamp = Math.floor(date.getTime() / 1000)
+          }
+        } catch (e) {
+          console.error('解析聊天记录时间失败:', e)
+        }
+      }
+
+      // 转换消息类型名称
+      let typeName = '文本消息'
+      let content = record.datadesc || record.datatitle || ''
+      
+      switch (record.datatype) {
+        case 1:
+          typeName = '文本消息'
+          break
+        case 3:
+          typeName = '图片消息'
+          content = '[图片]'
+          break
+        case 8:
+        case 49:
+          typeName = '文件消息'
+          content = record.datatitle ? `[文件] ${record.datatitle}` : '[文件]'
+          break
+        case 34:
+          typeName = '语音消息'
+          content = '[语音消息]'
+          break
+        case 43:
+          typeName = '视频消息'
+          content = '[视频]'
+          break
+        case 47:
+          typeName = '动画表情'
+          content = '[动画表情]'
+          break
+        default:
+          typeName = '其他消息'
+          content = record.datadesc || record.datatitle || '[消息]'
+      }
+
+      const chatRecord: any = {
+        sender: record.sourcename || 'unknown',
+        senderDisplayName: record.sourcename || 'unknown',
+        timestamp,
+        formattedTime: timestamp > 0 ? this.formatTimestamp(timestamp) : record.sourcetime,
+        type: typeName,
+        datatype: record.datatype,
+        content
+      }
+
+      // 添加头像
+      if (options.exportAvatars && record.sourceheadurl) {
+        chatRecord.senderAvatar = record.sourceheadurl
+      }
+
+      // 添加文件信息
+      if (record.fileext) {
+        chatRecord.fileExt = record.fileext
+      }
+      if (record.datasize > 0) {
+        chatRecord.fileSize = record.datasize
+      }
+
+      return chatRecord
+    })
   }
 
   /**
@@ -904,7 +1231,25 @@ class ExportService {
   /**
    * 获取消息类型名称
    */
-  private getMessageTypeName(localType: number): string {
+  private getMessageTypeName(localType: number, content?: string): string {
+    // 检查 XML 中的 type 标签（支持大 localType 的情况）
+    if (content) {
+      const xmlTypeMatch = /<type>(\d+)<\/type>/i.exec(content)
+      const xmlType = xmlTypeMatch ? xmlTypeMatch[1] : null
+      
+      if (xmlType) {
+        switch (xmlType) {
+          case '2000': return '转账消息'
+          case '5': return '链接消息'
+          case '6': return '文件消息'
+          case '19': return '聊天记录'
+          case '33':
+          case '36': return '小程序消息'
+          case '57': return '引用消息'
+        }
+      }
+    }
+
     const typeNames: Record<number, string> = {
       1: '文本消息',
       3: '图片消息',
@@ -1034,21 +1379,30 @@ class ExportService {
             // 提取群昵称
             const groupNickname = isGroup ? this.extractGroupNickname(content, actualSender) : undefined
 
+            // 检查是否是聊天记录消息（type=19）
+            const xmlType = this.extractXmlValue(content, 'type')
+            let chatRecordList: any[] | undefined
+            if (xmlType === '19' || localType === 49) {
+              chatRecordList = this.parseChatHistory(content)
+            }
+
             allMessages.push({
               localId: row.local_id || allMessages.length + 1,
               platformMessageId,
               createTime,
               formattedTime: this.formatTimestamp(createTime),
-              type: this.getMessageTypeName(localType),
+              type: this.getMessageTypeName(localType, content),
               localType,
               chatLabType: this.convertMessageType(localType, content),
-              content: this.parseMessageContent(content, localType),
+              content: this.parseMessageContent(content, localType, sessionId, createTime),
+              rawContent: content, // 保留原始内容
               isSend: isSend ? 1 : 0,
               senderUsername: actualSender,
               senderDisplayName: senderInfo.displayName,
               ...(groupNickname && { groupNickname }),
               ...(replyToMessageId && { replyToMessageId }),
               ...(options.exportAvatars && senderInfo.avatarUrl && { senderAvatar: senderInfo.avatarUrl }),
+              ...(chatRecordList && { chatRecords: this.formatChatRecordsForJson(chatRecordList, options) }),
               source
             })
 
@@ -1176,14 +1530,21 @@ class ExportService {
             const content = this.decodeMessageContent(row.message_content, row.compress_content)
             const localType = row.local_type || row.type || 1
             const senderUsername = row.sender_username || ''
-            
+
             // 判断是否是自己发送的消息
-            const isSend = row.is_send === 1 || 
-                          senderUsername === cleanedMyWxid || 
-                          senderUsername === fullMyWxid
+            const isSend = row.is_send === 1 ||
+              senderUsername === cleanedMyWxid ||
+              senderUsername === fullMyWxid
 
             const actualSender = isSend ? cleanedMyWxid : (senderUsername || sessionId)
             const senderInfo = await this.getContactInfo(actualSender)
+
+            // 检查是否是聊天记录消息（type=19）
+            const xmlType = this.extractXmlValue(content, 'type')
+            let chatRecordList: any[] | undefined
+            if (xmlType === '19' || localType === 49) {
+              chatRecordList = this.parseChatHistory(content)
+            }
 
             allMessages.push({
               createTime,
@@ -1191,7 +1552,9 @@ class ExportService {
               type: localType,
               content,
               senderName: senderInfo.displayName,
-              isSend  // 保存发送方向
+              senderAvatar: options.exportAvatars ? senderInfo.avatarUrl : undefined,
+              isSend,
+              chatRecordList
             })
           }
         } catch (e) {
@@ -1208,24 +1571,24 @@ class ExportService {
 
       // 准备 Excel 数据
       const excelData: any[] = []
-      
+
       for (let index = 0; index < allMessages.length; index++) {
         const msg = allMessages[index]
-        const msgType = this.getMessageTypeText(msg.type)
+        const msgType = this.getMessageTypeName(msg.type, msg.content)
         const time = new Date(msg.createTime * 1000)
-        
-        // 获取发送者完整信息
-        const senderInfo = await this.getContactInfo(msg.talker)
-        
+
+        // 获取消息内容（使用统一的解析方法）
+        const messageContent = this.parseMessageContent(msg.content, msg.type, sessionId, msg.createTime)
+
         const row: any = {
           '序号': index + 1,
-          '时间': time.toLocaleString('zh-CN', { 
-            year: 'numeric', 
-            month: '2-digit', 
-            day: '2-digit', 
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit' 
+          '时间': time.toLocaleString('zh-CN', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
           }),
           '日期': time.toLocaleDateString('zh-CN'),
           '时刻': time.toLocaleTimeString('zh-CN'),
@@ -1233,16 +1596,26 @@ class ExportService {
           '发送者': msg.senderName,
           '微信ID': msg.talker,
           '消息类型': msgType,
-          '消息内容': this.getMessageContent(msg),
+          '消息内容': messageContent || '',
           '原始类型代码': msg.type,
           '时间戳': msg.createTime
         }
-        
+
         // 只有勾选导出头像时才添加头像链接列
-        if (options.exportAvatars) {
-          row['头像链接'] = senderInfo.avatarUrl || ''
+        if (options.exportAvatars && msg.senderAvatar) {
+          row['头像链接'] = msg.senderAvatar
         }
-        
+
+        // 如果有聊天记录，添加聊天记录详情列
+        if (msg.chatRecordList && msg.chatRecordList.length > 0) {
+          const recordDetails = msg.chatRecordList.map((record: any, idx: number) => {
+            const recordType = this.getChatRecordTypeName(record.datatype)
+            const recordContent = this.getChatRecordContent(record)
+            return `${idx + 1}. [${record.sourcename}] ${record.sourcetime} ${recordType}: ${recordContent}`
+          }).join('\n')
+          row['聊天记录详情'] = recordDetails
+        }
+
         excelData.push(row)
       }
 
@@ -1250,7 +1623,7 @@ class ExportService {
       const wb = XLSX.utils.book_new()
       const ws = XLSX.utils.json_to_sheet(excelData)
 
-      // 设置列宽（根据是否导出头像动态调整）
+      // 设置列宽（根据是否导出头像和聊天记录动态调整）
       const colWidths: any[] = [
         { wch: 6 },   // 序号
         { wch: 20 },  // 时间
@@ -1259,16 +1632,22 @@ class ExportService {
         { wch: 6 },   // 星期
         { wch: 15 },  // 发送者
         { wch: 25 },  // 微信ID
-        { wch: 10 },  // 消息类型
+        { wch: 12 },  // 消息类型
         { wch: 50 },  // 消息内容
         { wch: 8 },   // 原始类型代码
         { wch: 12 }   // 时间戳
       ]
-      
+
       if (options.exportAvatars) {
         colWidths.push({ wch: 50 })  // 头像链接
       }
-      
+
+      // 检查是否有聊天记录消息
+      const hasChatRecords = allMessages.some(msg => msg.chatRecordList && msg.chatRecordList.length > 0)
+      if (hasChatRecords) {
+        colWidths.push({ wch: 80 })  // 聊天记录详情
+      }
+
       ws['!cols'] = colWidths
 
       // 添加工作表（工作表名称最多31个字符，且不能包含特殊字符）
@@ -1294,7 +1673,7 @@ class ExportService {
   }
 
   /**
-   * 导出单个会话为 HTML 格式
+   * 导出单个会话为 HTML 格式（数据内嵌版本）
    */
   async exportSessionToHtml(
     sessionId: string,
@@ -1307,8 +1686,9 @@ class ExportService {
       }
 
       const sessionInfo = await this.getContactInfo(sessionId)
-      const cleanedMyWxid = (this.configService.get('myWxid') || '').replace(/^wxid_/, '')
-      const fullMyWxid = `wxid_${cleanedMyWxid}`
+      const myWxid = this.configService.get('myWxid') || ''
+      const cleanedMyWxid = this.cleanAccountDirName(myWxid)
+      const isGroup = sessionId.includes('@chatroom')
 
       // 查找消息数据库和表
       const dbTablePairs = this.findSessionTables(sessionId)
@@ -1318,6 +1698,7 @@ class ExportService {
 
       // 收集所有消息
       const allMessages: any[] = []
+      const memberSet = new Map<string, any>()
 
       for (const { db, tableName } of dbTablePairs) {
         try {
@@ -1349,24 +1730,50 @@ class ExportService {
             const content = this.decodeMessageContent(row.message_content, row.compress_content)
             const localType = row.local_type || row.type || 1
             const senderUsername = row.sender_username || ''
-            
-            // 判断是否是自己发送的消息
-            const isSend = row.is_send === 1 || 
-                          senderUsername === cleanedMyWxid || 
-                          senderUsername === fullMyWxid
+            const isSend = row.is_send === 1 || senderUsername === cleanedMyWxid
 
             const actualSender = isSend ? cleanedMyWxid : (senderUsername || sessionId)
             const senderInfo = await this.getContactInfo(actualSender)
 
+            // 检查是否是聊天记录消息
+            const xmlType = this.extractXmlValue(content, 'type')
+            let chatRecordList: any[] | undefined
+            if (xmlType === '19' || localType === 49) {
+              chatRecordList = this.parseChatHistory(content)
+            }
+
             allMessages.push({
-              createTime,
-              talker: actualSender,
-              type: localType,
-              content,
+              timestamp: createTime,
+              sender: actualSender,
               senderName: senderInfo.displayName,
-              avatarUrl: options.exportAvatars ? senderInfo.avatarUrl : undefined,
-              isSend
+              type: localType,
+              content: this.parseMessageContent(content, localType, sessionId, createTime),
+              rawContent: content,
+              isSend,
+              chatRecords: chatRecordList ? this.formatChatRecordsForJson(chatRecordList, options) : undefined
             })
+
+            // 收集成员信息
+            if (!memberSet.has(actualSender)) {
+              memberSet.set(actualSender, {
+                id: actualSender,
+                name: senderInfo.displayName,
+                avatar: options.exportAvatars ? senderInfo.avatarUrl : undefined
+              })
+            }
+
+            // 收集聊天记录中的成员
+            if (chatRecordList) {
+              for (const record of chatRecordList) {
+                if (record.sourcename && !memberSet.has(record.sourcename)) {
+                  memberSet.set(record.sourcename, {
+                    id: record.sourcename,
+                    name: record.sourcename,
+                    avatar: options.exportAvatars ? record.sourceheadurl : undefined
+                  })
+                }
+              }
+            }
           }
         } catch (e) {
           console.error(`读取消息表 ${tableName} 失败:`, e)
@@ -1378,15 +1785,47 @@ class ExportService {
       }
 
       // 按时间排序
-      allMessages.sort((a, b) => a.createTime - b.createTime)
+      allMessages.sort((a, b) => a.timestamp - b.timestamp)
 
-      // 生成 HTML
-      const html = this.generateHtmlContent(sessionInfo, allMessages, options)
+      // 准备导出数据
+      const exportData = {
+        meta: {
+          sessionId,
+          sessionName: sessionInfo.displayName,
+          isGroup,
+          exportTime: Date.now(),
+          messageCount: allMessages.length,
+          dateRange: options.dateRange ? {
+            start: options.dateRange.start,
+            end: options.dateRange.end
+          } : null
+        },
+        members: Array.from(memberSet.values()),
+        messages: allMessages
+      }
 
-      // 写入文件
-      fs.writeFileSync(outputPath, html, 'utf-8')
+      // 创建导出目录
+      const exportDir = path.dirname(outputPath)
+      const baseName = path.basename(outputPath, '.html')
+      const exportFolder = path.join(exportDir, baseName)
+      
+      // 如果目录不存在则创建
+      if (!fs.existsSync(exportFolder)) {
+        fs.mkdirSync(exportFolder, { recursive: true })
+      }
 
-      return { success: true }
+      // 生成并写入各个文件
+      const htmlPath = path.join(exportFolder, 'index.html')
+      const cssPath = path.join(exportFolder, 'styles.css')
+      const jsPath = path.join(exportFolder, 'app.js')
+      const dataPath = path.join(exportFolder, 'data.js')
+
+      fs.writeFileSync(htmlPath, HtmlExportGenerator.generateHtmlWithData(exportData), 'utf-8')
+      fs.writeFileSync(cssPath, HtmlExportGenerator.generateCss(), 'utf-8')
+      fs.writeFileSync(jsPath, HtmlExportGenerator.generateJs(), 'utf-8')
+      fs.writeFileSync(dataPath, HtmlExportGenerator.generateDataJs(exportData), 'utf-8')
+
+      return { success: true, outputPath: htmlPath }
     } catch (e) {
       console.error('ExportService: HTML 导出失败:', e)
       return { success: false, error: String(e) }
@@ -1394,476 +1833,42 @@ class ExportService {
   }
 
   /**
-   * 生成 HTML 内容
+   * 获取聊天记录消息的类型名称
    */
-  private generateHtmlContent(sessionInfo: any, messages: any[], options: ExportOptions): string {
-    const title = `${sessionInfo.displayName} - 聊天记录`
-    const totalMessages = messages.length
-    const dateRange = options.dateRange 
-      ? `${new Date(options.dateRange.start * 1000).toLocaleDateString()} - ${new Date(options.dateRange.end * 1000).toLocaleDateString()}`
-      : '全部'
-
-    let html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.escapeHtml(title)}</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: #f5f5f5;
-      padding: 20px;
-      line-height: 1.6;
-    }
-    .container { 
-      max-width: 900px; 
-      margin: 0 auto; 
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-      overflow: hidden;
-    }
-    .header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      padding: 30px;
-      text-align: center;
-      position: sticky;
-      top: 0;
-      z-index: 100;
-    }
-    .header h1 { font-size: 28px; margin-bottom: 10px; }
-    .header .info { opacity: 0.9; font-size: 14px; }
-    .controls {
-      padding: 15px;
-      background: #f9f9f9;
-      border-bottom: 1px solid #eee;
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-      position: sticky;
-      top: 0;
-      z-index: 99;
-    }
-    .controls button {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 4px;
-      background: #667eea;
-      color: white;
-      cursor: pointer;
-      font-size: 14px;
-    }
-    .controls button:hover { background: #5568d3; }
-    .controls input {
-      padding: 8px 12px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      font-size: 14px;
-    }
-    .controls .page-info {
-      color: #666;
-      font-size: 14px;
-    }
-    .messages { 
-      padding: 20px;
-      min-height: 400px;
-    }
-    .message {
-      display: flex;
-      margin-bottom: 20px;
-    }
-    .message.sent { flex-direction: row-reverse; }
-    .avatar {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: #ddd;
-      flex-shrink: 0;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
-      color: white;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    .avatar img { width: 100%; height: 100%; object-fit: cover; }
-    .message-content {
-      max-width: 60%;
-      margin: 0 12px;
-    }
-    .message.sent .message-content { text-align: right; }
-    .sender-name {
-      font-size: 12px;
-      color: #999;
-      margin-bottom: 4px;
-    }
-    .message.sent .sender-name { text-align: right; }
-    .bubble {
-      display: inline-block;
-      padding: 10px 15px;
-      border-radius: 12px;
-      word-wrap: break-word;
-      max-width: 100%;
-    }
-    .message.received .bubble {
-      background: #f0f0f0;
-      color: #333;
-      border-bottom-left-radius: 4px;
-    }
-    .message.sent .bubble {
-      background: #667eea;
-      color: white;
-      border-bottom-right-radius: 4px;
-    }
-    .time {
-      font-size: 11px;
-      color: #999;
-      margin-top: 4px;
-    }
-    .message.sent .time { text-align: right; }
-    .media-tag {
-      display: inline-block;
-      padding: 4px 8px;
-      background: rgba(0,0,0,0.1);
-      border-radius: 4px;
-      font-size: 12px;
-      margin-right: 5px;
-    }
-    .system-message {
-      text-align: center;
-      color: #999;
-      font-size: 12px;
-      margin: 15px 0;
-    }
-    .footer {
-      text-align: center;
-      padding: 20px;
-      color: #999;
-      font-size: 12px;
-      border-top: 1px solid #eee;
-    }
-    .loading {
-      text-align: center;
-      padding: 40px;
-      color: #999;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>${this.escapeHtml(sessionInfo.displayName)}</h1>
-      <div class="info">
-        <div>共 ${totalMessages} 条消息</div>
-        <div>时间范围: ${dateRange}</div>
-        <div>导出时间: ${new Date().toLocaleString('zh-CN')}</div>
-      </div>
-    </div>
-    <div class="controls">
-      <button onclick="prevPage()">上一页</button>
-      <button onclick="nextPage()">下一页</button>
-      <button onclick="firstPage()">首页</button>
-      <button onclick="lastPage()">末页</button>
-      <input type="number" id="pageInput" placeholder="页码" min="1" style="width: 80px;">
-      <button onclick="goToPage()">跳转</button>
-      <span class="page-info">第 <span id="currentPage">1</span> / <span id="totalPages">1</span> 页</span>
-      <input type="text" id="searchInput" placeholder="搜索消息..." style="flex: 1; min-width: 200px;">
-      <button onclick="search()">搜索</button>
-    </div>
-    <div class="messages" id="messagesContainer">
-      <div class="loading">加载中...</div>
-    </div>
-    <div class="footer">
-      由密语-CipherTalk导出 | ${new Date().toLocaleDateString('zh-CN')}
-    </div>
-  </div>
-
-  <script>
-    // 所有消息数据
-    const allMessages = ${JSON.stringify(messages)};
-    const PAGE_SIZE = 50; // 每页显示50条消息
-    let currentPage = 1;
-    let filteredMessages = allMessages;
-    const totalPages = Math.ceil(allMessages.length / PAGE_SIZE);
-    
-    // Debug: 检查 isSend 分布
-    console.log('Total messages:', allMessages.length);
-    console.log('Sent messages:', allMessages.filter(m => m.isSend).length);
-    console.log('Received messages:', allMessages.filter(m => !m.isSend).length);
-
-    // 渲染消息
-    function renderMessages() {
-      const container = document.getElementById('messagesContainer');
-      const start = (currentPage - 1) * PAGE_SIZE;
-      const end = start + PAGE_SIZE;
-      const pageMessages = filteredMessages.slice(start, end);
-
-      if (pageMessages.length === 0) {
-        container.innerHTML = '<div class="loading">没有消息</div>';
-        return;
-      }
-
-      let html = '';
-      for (const msg of pageMessages) {
-        const time = new Date(msg.createTime * 1000);
-        const timeStr = time.toLocaleString('zh-CN', { 
-          month: '2-digit', 
-          day: '2-digit', 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        });
-
-        if (msg.type === 10000) {
-          html += \`<div class="system-message">\${escapeHtml(msg.content || '')}</div>\`;
-        } else {
-          const messageClass = msg.isSend ? 'sent' : 'received';
-          const avatarContent = msg.avatarUrl 
-            ? \`<img src="\${escapeHtml(msg.avatarUrl)}" alt="\${escapeHtml(msg.senderName)}">\`
-            : msg.senderName.charAt(0);
-
-          html += \`<div class="message \${messageClass}">
-            <div class="avatar">\${avatarContent}</div>
-            <div class="message-content">
-              <div class="sender-name">\${escapeHtml(msg.senderName)}</div>
-              <div class="bubble">\${formatMessageContent(msg)}</div>
-              <div class="time">\${timeStr}</div>
-            </div>
-          </div>\`;
-        }
-      }
-
-      container.innerHTML = html;
-      document.getElementById('currentPage').textContent = currentPage;
-      document.getElementById('totalPages').textContent = Math.ceil(filteredMessages.length / PAGE_SIZE);
-    }
-
-    // 格式化消息内容
-    function formatMessageContent(msg) {
-      const typeMap = {
-        1: '文本', 3: '📷 图片', 34: '🎤 语音', 43: '🎬 视频',
-        47: '😊 表情', 48: '📍 位置', 49: '🔗 链接/文件',
-        42: '👤 名片', 50: '📞 通话'
-      };
-      
-      if (msg.type === 1) {
-        return escapeHtml(msg.content || '');
-      } else {
-        const typeText = typeMap[msg.type] || \`未知(\${msg.type})\`;
-        return \`<span class="media-tag">\${typeText}</span>\`;
-      }
-    }
-
-    // HTML 转义
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
-    // 分页控制
-    function prevPage() {
-      if (currentPage > 1) {
-        currentPage--;
-        renderMessages();
-        window.scrollTo(0, 0);
-      }
-    }
-
-    function nextPage() {
-      const maxPage = Math.ceil(filteredMessages.length / PAGE_SIZE);
-      if (currentPage < maxPage) {
-        currentPage++;
-        renderMessages();
-        window.scrollTo(0, 0);
-      }
-    }
-
-    function firstPage() {
-      currentPage = 1;
-      renderMessages();
-      window.scrollTo(0, 0);
-    }
-
-    function lastPage() {
-      currentPage = Math.ceil(filteredMessages.length / PAGE_SIZE);
-      renderMessages();
-      window.scrollTo(0, 0);
-    }
-
-    function goToPage() {
-      const input = document.getElementById('pageInput');
-      const page = parseInt(input.value);
-      const maxPage = Math.ceil(filteredMessages.length / PAGE_SIZE);
-      if (page >= 1 && page <= maxPage) {
-        currentPage = page;
-        renderMessages();
-        window.scrollTo(0, 0);
-      }
-    }
-
-    // 搜索功能
-    function search() {
-      const keyword = document.getElementById('searchInput').value.trim().toLowerCase();
-      if (!keyword) {
-        filteredMessages = allMessages;
-      } else {
-        filteredMessages = allMessages.filter(msg => {
-          return (msg.content && msg.content.toLowerCase().includes(keyword)) ||
-                 (msg.senderName && msg.senderName.toLowerCase().includes(keyword));
-        });
-      }
-      currentPage = 1;
-      renderMessages();
-    }
-
-    // 键盘事件
-    document.getElementById('searchInput').addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') search();
-    });
-
-    document.getElementById('pageInput').addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') goToPage();
-    });
-
-    // 初始化
-    renderMessages();
-  </script>
-</body>
-</html>`
-
-    return html
-  }
-
-  /**
-   * 格式化消息内容为 HTML
-   */
-  private formatMessageContent(msg: any): string {
-    const typeTag = this.getMessageTypeText(msg.type)
-    
-    if (msg.type === 1) {
-      // 文本消息
-      return this.escapeHtml(msg.content || '')
-    } else if (msg.type === 3) {
-      return `<span class="media-tag">📷 ${typeTag}</span>`
-    } else if (msg.type === 34) {
-      return `<span class="media-tag">🎤 ${typeTag}</span>`
-    } else if (msg.type === 43) {
-      return `<span class="media-tag">🎬 ${typeTag}</span>`
-    } else if (msg.type === 47) {
-      return `<span class="media-tag">😊 ${typeTag}</span>`
-    } else if (msg.type === 48) {
-      return `<span class="media-tag">📍 ${typeTag}</span>`
-    } else if (msg.type === 49) {
-      return `<span class="media-tag">🔗 ${typeTag}</span>`
-    } else if (msg.type === 42) {
-      return `<span class="media-tag">👤 ${typeTag}</span>`
-    } else if (msg.type === 50) {
-      return `<span class="media-tag">📞 ${typeTag}</span>`
-    } else {
-      return `<span class="media-tag">${typeTag}</span>`
-    }
-  }
-
-  /**
-   * HTML 转义
-   */
-  private escapeHtml(text: string): string {
-    const map: Record<string, string> = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#039;'
-    }
-    return text.replace(/[&<>"']/g, m => map[m])
-  }
-
-  /**
-   * 获取消息类型文本
-   */
-  private getMessageTypeText(type: number): string {
-    const typeMap: Record<number, string> = {
+  private getChatRecordTypeName(datatype: number): string {
+    const typeNames: Record<number, string> = {
       1: '文本',
       3: '图片',
+      8: '文件',
       34: '语音',
       43: '视频',
       47: '表情',
-      48: '位置',
-      49: '链接/文件',
-      42: '名片',
-      50: '通话',
-      10000: '系统消息'
+      49: '文件'
     }
-    return typeMap[type] || `未知(${type})`
+    return typeNames[datatype] || '其他'
   }
 
   /**
-   * 获取消息内容（简化版）
+   * 获取聊天记录消息的内容
    */
-  private getMessageContent(msg: any): string {
-    if (!msg.content) return ''
-    
-    // 文本消息
-    if (msg.type === 1) {
-      return msg.content
+  private getChatRecordContent(record: any): string {
+    switch (record.datatype) {
+      case 1:
+        return record.datadesc || record.datatitle || ''
+      case 3:
+        return '[图片]'
+      case 8:
+      case 49:
+        return record.datatitle ? `[文件] ${record.datatitle}` : '[文件]'
+      case 34:
+        return '[语音消息]'
+      case 43:
+        return '[视频]'
+      case 47:
+        return '[动画表情]'
+      default:
+        return record.datadesc || record.datatitle || '[消息]'
     }
-    
-    // 图片
-    if (msg.type === 3) {
-      return '[图片]'
-    }
-    
-    // 语音
-    if (msg.type === 34) {
-      return '[语音]'
-    }
-    
-    // 视频
-    if (msg.type === 43) {
-      return '[视频]'
-    }
-    
-    // 表情
-    if (msg.type === 47) {
-      return '[表情]'
-    }
-    
-    // 位置
-    if (msg.type === 48) {
-      return '[位置]'
-    }
-    
-    // 链接/文件
-    if (msg.type === 49) {
-      try {
-        if (msg.content.includes('<type>5</type>')) return '[链接]'
-        if (msg.content.includes('<type>6</type>')) return '[文件]'
-        if (msg.content.includes('<type>57</type>')) return '[引用消息]'
-      } catch {}
-      return '[链接/文件]'
-    }
-    
-    // 名片
-    if (msg.type === 42) {
-      return '[名片]'
-    }
-    
-    // 通话
-    if (msg.type === 50) {
-      return '[通话]'
-    }
-    
-    // 系统消息
-    if (msg.type === 10000) {
-      return msg.content
-    }
-    
-    return msg.content.substring(0, 100)
   }
 
   /**
@@ -1900,8 +1905,8 @@ class ExportService {
           total: sessionIds.length,
           currentSession: sessionInfo.displayName,
           phase: 'exporting',
-        detail: '正在读取消息...'
-      })
+          detail: '正在读取消息...'
+        })
 
         // 生成文件名（清理非法字符）
         const safeName = sessionInfo.displayName.replace(/[<>:"/\\|?*]/g, '_')
@@ -1954,9 +1959,13 @@ class ExportService {
   /**
    * 导出通讯录
    */
+  /**
+   * 导出通讯录
+   */
   async exportContacts(
     outputDir: string,
-    options: ContactExportOptions
+    options: ContactExportOptions,
+    onProgress?: (progress: ExportProgress) => void
   ): Promise<{ success: boolean; successCount?: number; error?: string }> {
     try {
       if (!this.dbDir) {
@@ -1965,6 +1974,14 @@ class ExportService {
           return { success: false, error: connectResult.error }
         }
       }
+
+      onProgress?.({
+        current: 0,
+        total: 100,
+        currentSession: '通讯录',
+        phase: 'preparing',
+        detail: '正在连接数据库...'
+      })
 
       if (!this.contactDb) {
         return { success: false, error: '联系人数据库未连接' }
@@ -2004,6 +2021,14 @@ class ExportService {
       if (hasExtraBuffer) selectCols.push('extra_buffer')
       if (hasDescription) selectCols.push('description')
 
+      onProgress?.({
+        current: 20,
+        total: 100,
+        currentSession: '通讯录',
+        phase: 'exporting',
+        detail: '正在读取联系人数据...'
+      })
+
       const rows = this.contactDb.prepare(`
         SELECT ${selectCols.join(', ')} FROM contact
       `).all() as any[]
@@ -2039,13 +2064,6 @@ class ExportService {
         }
 
         // 仅当没有指定选中列表时，才应用类型过滤
-        // 如果指定了选中列表，则忽略类型过滤（用户选了啥就导啥）
-        // 或者也可以保留类型过滤？通常全选导出时类型过滤有用，手动选择时类型过滤可能造成困扰。
-        // 根据需求 "不选中或者全选就默认导出全部"，这里的 "全部" 应该是指符合 contactTypes 筛选条件的全部。
-        // 而手动选择时，应该是明确指定要导出的。
-        // 所以逻辑是：如果有 selectedUsernames，则直接导出选中的（不看 type 过滤）；
-        // 如果没有 selectedUsernames（空），则应用 type 过滤导出全部符合类型的。
-
         if (!options.selectedUsernames || options.selectedUsernames.length === 0) {
           if (type === 'friend' && !options.contactTypes.friends) continue
           if (type === 'group' && !options.contactTypes.groups) continue
@@ -2082,6 +2100,14 @@ class ExportService {
           avatarUrl
         })
       }
+
+      onProgress?.({
+        current: 60,
+        total: 100,
+        currentSession: '通讯录',
+        phase: 'writing',
+        detail: `正在处理 ${contacts.length} 个联系人...`
+      })
 
       // 按类型和名称排序
       contacts.sort((a, b) => {
@@ -2163,6 +2189,14 @@ class ExportService {
       } else {
         return { success: false, error: `不支持的格式: ${options.format}` }
       }
+
+      onProgress?.({
+        current: 100,
+        total: 100,
+        currentSession: '通讯录',
+        phase: 'complete',
+        detail: '导出完成'
+      })
 
       return { success: true, successCount: contacts.length }
     } catch (e) {

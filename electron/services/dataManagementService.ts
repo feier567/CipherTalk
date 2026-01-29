@@ -1237,6 +1237,12 @@ class DataManagementService {
    * 启用自动更新（文件监听 + 定时检查）
    */
   enableAutoUpdate(intervalSeconds: number = 30): void {
+    // 检查配置是否允许自动更新
+    if (!this.configService.get('autoUpdateDatabase')) {
+      console.log('[DataManagement] 自动更新配置为关闭，跳过启动')
+      return
+    }
+
     if (this.autoUpdateEnabled) {
       this.disableAutoUpdate()
     }
@@ -1250,6 +1256,11 @@ class DataManagementService {
     // 启动定时检查（作为备选方案，仅在文件监听失效时使用）
     this.autoUpdateInterval = setInterval(async () => {
       if (this.isUpdating) return
+
+      // 再次检查配置，以防运行时被修改
+      if (!this.configService.get('autoUpdateDatabase')) {
+        return
+      }
 
       const checkResult = await this.checkForUpdates()
       if (checkResult.hasUpdate) {
@@ -1342,6 +1353,9 @@ class DataManagementService {
       this.dbWatcher = fs.watch(dbStoragePath, { recursive: true }, async (eventType, filename) => {
         if (!filename || this.isUpdating) return
 
+        // 检查配置
+        if (!this.configService.get('autoUpdateDatabase')) return
+
         // 只监听 .db 文件
         if (!filename.toLowerCase().endsWith('.db')) return
 
@@ -1392,6 +1406,11 @@ class DataManagementService {
    * 触发更新（带频率限制和队列管理）
    */
   private triggerUpdate(): void {
+    // 检查配置
+    if (!this.configService.get('autoUpdateDatabase')) {
+      return
+    }
+
     // 如果正在更新，增加待处理计数
     if (this.isUpdating) {
       this.pendingUpdateCount++
@@ -1432,6 +1451,11 @@ class DataManagementService {
    * @param silent 是否静默更新（不显示进度）
    */
   async autoIncrementalUpdate(silent: boolean = false): Promise<{ success: boolean; updated: boolean; error?: string }> {
+    // 检查配置
+    if (!this.configService.get('autoUpdateDatabase')) {
+      return { success: true, updated: false }
+    }
+
     if (this.isUpdating) {
       // 如果正在更新，返回待处理状态
       this.pendingUpdateCount++

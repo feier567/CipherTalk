@@ -104,6 +104,7 @@ function SettingsPage() {
   const [skipIntegrityCheck, setSkipIntegrityCheck] = useState(false)
   const [exportDefaultDateRange, setExportDefaultDateRange] = useState<number>(0)
   const [exportDefaultAvatars, setExportDefaultAvatars] = useState<boolean>(true)
+  const [autoUpdateDatabase, setAutoUpdateDatabase] = useState(true)
 
   // AI 相关配置状态
   const [aiProvider, setAiProviderState] = useState('zhipu')
@@ -142,6 +143,7 @@ function SettingsPage() {
       const savedSttLanguages = await configService.getSttLanguages()
       const savedSttModelType = await configService.getSttModelType()
       const savedSkipIntegrityCheck = await configService.getSkipIntegrityCheck()
+      const savedAutoUpdateDatabase = await configService.getAutoUpdateDatabase()
 
       if (savedKey) setDecryptKey(savedKey)
       if (savedPath) setDbPath(savedPath)
@@ -157,6 +159,7 @@ function SettingsPage() {
       }
       setSttModelType(savedSttModelType)
       setSkipIntegrityCheck(savedSkipIntegrityCheck)
+      setAutoUpdateDatabase(savedAutoUpdateDatabase)
 
       const savedQuoteStyle = await configService.getQuoteStyle()
       setQuoteStyle(savedQuoteStyle)
@@ -648,6 +651,8 @@ function SettingsPage() {
 
       // 保存完整性检查设置
       await configService.setSkipIntegrityCheck(skipIntegrityCheck)
+      // 保存自动更新设置
+      await configService.setAutoUpdateDatabase(autoUpdateDatabase)
 
       // 保存引用样式
       await configService.setQuoteStyle(quoteStyle)
@@ -767,7 +772,28 @@ function SettingsPage() {
       </div>
 
       {/* 数据库解密部分 */}
-      <h3 className="section-title">数据库解密（已支持自动更新）</h3>
+      <h3 className="section-title">数据库解密与同步</h3>
+
+      <div className="form-group">
+        <div className="toggle-setting">
+          <div className="toggle-header">
+            <label className="toggle-label">
+              <span className="toggle-title">开启数据库自动增量同步</span>
+              <div className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={autoUpdateDatabase}
+                  onChange={(e) => setAutoUpdateDatabase(e.target.checked)}
+                />
+                <span className="toggle-slider" />
+              </div>
+            </label>
+          </div>
+          <div className="toggle-description">
+            <p>当检测到微信数据库文件变化时（如收到新消息），自动将新数据同步到密语。</p>
+          </div>
+        </div>
+      </div>
 
       <div className="form-group">
         <label>解密密钥</label>

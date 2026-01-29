@@ -19,11 +19,28 @@ export const CONFIG_KEYS = {
   QUOTE_STYLE: 'quoteStyle',
   SKIP_INTEGRITY_CHECK: 'skipIntegrityCheck',
   EXPORT_DEFAULT_DATE_RANGE: 'exportDefaultDateRange',
-  EXPORT_DEFAULT_AVATARS: 'exportDefaultAvatars'
+  EXPORT_DEFAULT_AVATARS: 'exportDefaultAvatars',
+  AUTO_UPDATE_DATABASE: 'autoUpdateDatabase'
 } as const
 
 // 当前协议版本 - 更新协议内容时递增此版本号
 export const CURRENT_AGREEMENT_VERSION = 2
+
+// ... existing code ...
+
+// 获取是否自动更新数据库
+export async function getAutoUpdateDatabase(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.AUTO_UPDATE_DATABASE)
+  return value !== undefined ? (value as boolean) : true
+}
+
+// 设置是否自动更新数据库
+export async function setAutoUpdateDatabase(enable: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTO_UPDATE_DATABASE, enable)
+}
+
+
+// --- AI 摘要配置 ---
 
 // 获取解密密钥
 export async function getDecryptKey(): Promise<string | null> {

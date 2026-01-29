@@ -41,6 +41,7 @@ interface ConfigSchema {
 
   // 数据管理相关
   skipIntegrityCheck: boolean
+  autoUpdateDatabase: boolean  // 是否自动更新数据库
 
   // AI 相关
   aiCurrentProvider: string  // 当前选中的提供商
@@ -75,6 +76,7 @@ const defaults: ConfigSchema = {
   activationData: '',
   logLevel: 'WARN', // 默认只记录警告和错误
   skipIntegrityCheck: false, // 默认进行完整性检查
+  autoUpdateDatabase: true,  // 默认开启自动更新
   // AI 默认配置
   aiCurrentProvider: 'zhipu',
   aiProviderConfigs: {},  // 空对象，用户配置后填充
@@ -148,12 +150,12 @@ export class ConfigService {
         const oldProviderRow = this.db.prepare("SELECT value FROM config WHERE key = 'aiProvider'").get() as { value: string } | undefined
         const oldApiKeyRow = this.db.prepare("SELECT value FROM config WHERE key = 'aiApiKey'").get() as { value: string } | undefined
         const oldModelRow = this.db.prepare("SELECT value FROM config WHERE key = 'aiModel'").get() as { value: string } | undefined
-        
+
         if (oldProviderRow && oldApiKeyRow) {
           const oldProvider = JSON.parse(oldProviderRow.value)
           const oldApiKey = JSON.parse(oldApiKeyRow.value)
           const oldModel = oldModelRow ? JSON.parse(oldModelRow.value) : ''
-          
+
           // 如果有旧配置且 API Key 不为空，迁移到新结构
           if (oldApiKey) {
             const newConfigs: any = {}
@@ -161,13 +163,13 @@ export class ConfigService {
               apiKey: oldApiKey,
               model: oldModel
             }
-            
+
             this.db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)").run('aiCurrentProvider', JSON.stringify(oldProvider))
             this.db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)").run('aiProviderConfigs', JSON.stringify(newConfigs))
-            
+
             // 删除旧配置
             this.db.prepare("DELETE FROM config WHERE key IN ('aiProvider', 'aiApiKey', 'aiModel')").run()
-            
+
             console.log('[Config] AI 配置已迁移到新结构')
           }
         }

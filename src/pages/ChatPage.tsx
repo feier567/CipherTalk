@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, Info, Calendar, Database, Hash, Image as ImageIcon, Play, Video, Copy, ZoomIn, CheckSquare, Check, Edit, Link, Sparkles, FileText, FileArchive } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, Info, Calendar, Database, Hash, Image as ImageIcon, Play, Video, Copy, ZoomIn, CheckSquare, Check, Edit, Link, Sparkles, FileText, FileArchive, Users } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useUpdateStatusStore } from '../stores/updateStatusStore'
 import ChatBackground from '../components/ChatBackground'
@@ -284,6 +284,15 @@ function ChatPage(_props: ChatPageProps) {
   const [showEnlargeView, setShowEnlargeView] = useState<{ message: Message; content: string } | null>(null)
   const [copyToast, setCopyToast] = useState(false)
   const [showMessageInfo, setShowMessageInfo] = useState<Message | null>(null) // 消息信息弹窗
+  const [showDatePicker, setShowDatePicker] = useState(false) // 日期选择器弹窗
+  const [selectedDate, setSelectedDate] = useState<string>('') // 选中的日期 (YYYY-MM-DD)
+  const [viewDate, setViewDate] = useState(new Date()) // 日历当前显示的月份
+  const [availableDates, setAvailableDates] = useState<Set<string>>(new Set()) // 当前月份有消息的日期
+  const [isLoadingDates, setIsLoadingDates] = useState(false) // 加载日期状态
+  const [isJumpingToDate, setIsJumpingToDate] = useState(false) // 正在跳转
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null)
+  const datePickerRef = useRef<HTMLDivElement>(null) // 日期选择器容器引用
+  const dateButtonRef = useRef<HTMLButtonElement>(null) // 日期按钮引用
 
   // 检查图片密钥配置（XOR 和 AES 都需要配置）
   useEffect(() => {
@@ -599,6 +608,89 @@ function ChatPage(_props: ChatPageProps) {
       }
     }
   }, [])
+
+  // 日期跳转处理
+  const handleJumpToDate = useCallback(async () => {
+    if (!selectedDate || !currentSessionId || isJumpingToDate) return
+
+    setIsJumpingToDate(true)
+    setShowDatePicker(false)
+
+    try {
+      // 将选中的日期转换为 Unix 时间戳（秒）
+      const targetDate = new Date(selectedDate)
+      targetDate.setHours(0, 0, 0, 0)
+      const targetTimestamp = Math.floor(targetDate.getTime() / 1000)
+
+      const result = await window.electronAPI.chat.getMessagesByDate(currentSessionId, targetTimestamp, 50)
+
+      if (result.success && result.messages && result.messages.length > 0) {
+        // 清空当前消息并加载新消息
+        setMessages(result.messages)
+        setHasMoreMessages(true) // 假设还有更多历史消息
+        setCurrentOffset(result.messages.length)
+
+        // 滚动到顶部显示目标日期的消息
+        requestAnimationFrame(() => {
+          if (messageListRef.current) {
+            messageListRef.current.scrollTop = 0
+          }
+        })
+      } else {
+        // 没有找到消息，可能日期太新
+        console.log('未找到该日期或之后的消息')
+      }
+    } catch (e) {
+      console.error('跳转到日期失败:', e)
+    } finally {
+      setIsJumpingToDate(false)
+    }
+  }, [selectedDate, currentSessionId, isJumpingToDate, setMessages, setHasMoreMessages])
+
+  // 加载当前月份有消息的日期
+  useEffect(() => {
+    if (!showDatePicker || !currentSessionId) return
+
+    const fetchDates = async () => {
+      setIsLoadingDates(true)
+      try {
+        const year = viewDate.getFullYear()
+        const month = viewDate.getMonth() + 1
+        // 同时加载上个月和下个月的日期，防止切换时闪烁（这里简单处理只加载当月）
+        const result = await window.electronAPI.chat.getDatesWithMessages(currentSessionId, year, month)
+        if (result.success && result.dates) {
+          setAvailableDates(new Set(result.dates))
+        } else {
+          setAvailableDates(new Set())
+        }
+      } catch (e) {
+        console.error('加载有消息的日期失败:', e)
+      } finally {
+        setIsLoadingDates(false)
+      }
+    }
+
+    fetchDates()
+  }, [viewDate, currentSessionId, showDatePicker])
+
+  // 点击外部关闭日期选择器
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node
+      // 检查是否点击在日期选择器包装器或下拉框内部
+      const isClickInsideWrapper = datePickerRef.current?.contains(target)
+      const isClickInsideDropdown = (target as Element).closest?.('.date-picker-dropdown')
+
+      if (!isClickInsideWrapper && !isClickInsideDropdown) {
+        setShowDatePicker(false)
+      }
+    }
+
+    if (showDatePicker) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showDatePicker])
 
   // 拖动调节侧边栏宽度
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
@@ -963,6 +1055,181 @@ function ChatPage(_props: ChatPageProps) {
                 >
                   <Sparkles size={18} />
                 </button>
+                <div className="date-picker-wrapper" ref={datePickerRef}>
+                  <button
+                    ref={dateButtonRef}
+                    className={`icon-btn date-jump-btn ${showDatePicker ? 'active' : ''}`}
+                    onClick={() => {
+                      if (!showDatePicker && dateButtonRef.current) {
+                        const rect = dateButtonRef.current.getBoundingClientRect()
+                        // 下拉框右边缘与按钮右边缘对齐
+                        const dropdownWidth = 320 // 增加宽度以容纳日历
+                        let left = rect.right - dropdownWidth
+                        // 确保不会超出屏幕左边
+                        if (left < 10) left = 10
+                        setDropdownPosition({
+                          top: rect.bottom + 8,
+                          left
+                        })
+                        // 重置视图到当前选中日期或今天
+                        setViewDate(selectedDate ? new Date(selectedDate) : new Date())
+                      }
+                      setShowDatePicker(!showDatePicker)
+                    }}
+                    title="跳转到日期"
+                  >
+                    <Calendar size={18} />
+                  </button>
+                  {showDatePicker && dropdownPosition && createPortal(
+                    <div
+                      className="date-picker-dropdown"
+                      style={{
+                        top: dropdownPosition.top,
+                        left: dropdownPosition.left,
+                        position: 'fixed',
+                        zIndex: 99999
+                      }}
+                      ref={(node) => {
+                        // 简单的点击外部检测需要这个 ref，但我们已经在 useEffect 中处理了关闭逻辑
+                        // 这里主要是为了确保它能被检测到
+                        if (node) {
+                          // 将这个 node 关联到 ref，以便 handleClickOutside 可以检查
+                          // 由于 ref 是针对 div 的，我们可以给 dropdown 一个单独的 ref 或者不使用 ref
+                          // 只要 handleClickOutside 逻辑能工作即可
+                        }
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      {/* 日历头部：月份切换 */}
+                      <div className="calendar-header">
+                        <button
+                          className="calendar-nav-btn"
+                          onClick={() => {
+                            const newDate = new Date(viewDate)
+                            newDate.setMonth(newDate.getMonth() - 1)
+                            setViewDate(newDate)
+                          }}
+                        >
+                          <ChevronDown size={16} style={{ transform: 'rotate(90deg)' }} />
+                        </button>
+                        <span className="current-month">
+                          {viewDate.getFullYear()}年 {viewDate.getMonth() + 1}月
+                        </span>
+                        <button
+                          className="calendar-nav-btn nav-next"
+                          onClick={() => {
+                            const newDate = new Date(viewDate)
+                            newDate.setMonth(newDate.getMonth() + 1)
+                            // 不允许查看未来月份（如果本月是未来）
+                            const now = new Date()
+                            if (newDate.getFullYear() > now.getFullYear() ||
+                              (newDate.getFullYear() === now.getFullYear() && newDate.getMonth() > now.getMonth())) {
+                              return
+                            }
+                            setViewDate(newDate)
+                          }}
+                          disabled={
+                            viewDate.getFullYear() === new Date().getFullYear() &&
+                            viewDate.getMonth() === new Date().getMonth()
+                          }
+                        >
+                          <ChevronDown size={16} style={{ transform: 'rotate(-90deg)' }} />
+                        </button>
+                      </div>
+
+                      {/* 星期表头 */}
+                      <div className="calendar-weekdays">
+                        {['日', '一', '二', '三', '四', '五', '六'].map(d => (
+                          <div key={d} className="weekday">{d}</div>
+                        ))}
+                      </div>
+
+                      {/* 日期网格 */}
+                      <div className="calendar-grid">
+                        {(() => {
+                          const year = viewDate.getFullYear()
+                          const month = viewDate.getMonth()
+
+                          // 当月第一天
+                          const firstDay = new Date(year, month, 1)
+                          // 当月最后一天
+                          const lastDay = new Date(year, month + 1, 0)
+
+                          const daysInMonth = lastDay.getDate()
+                          const startDayOfWeek = firstDay.getDay() // 0-6
+
+                          const days = []
+                          // 填充上个月的空位
+                          for (let i = 0; i < startDayOfWeek; i++) {
+                            days.push(<div key={`empty-${i}`} className="calendar-day empty"></div>)
+                          }
+
+                          // 填充当月日期
+                          const today = new Date()
+                          for (let i = 1; i <= daysInMonth; i++) {
+                            const currentDate = new Date(year, month, i)
+                            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(i).padStart(2, '0')}`
+                            const isSelected = selectedDate === dateStr
+                            const isToday = today.toDateString() === currentDate.toDateString()
+                            const isFuture = currentDate > today
+                            const hasMessage = availableDates.has(dateStr)
+
+                            // 禁用条件：是未来日期，或者（不是未来日期且没有消息）
+                            // 但如果在加载中，暂时不禁用非未来的日期，或者显示加载状态
+                            const isDisabled = isFuture || (!isFuture && !hasMessage)
+
+                            days.push(
+                              <button
+                                key={i}
+                                className={`calendar-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''} ${isDisabled ? 'disabled' : ''}`}
+                                onClick={() => {
+                                  if (isDisabled) return
+                                  setSelectedDate(dateStr)
+                                }}
+                                disabled={isDisabled}
+                                title={isFuture ? '未来时间' : (!hasMessage ? '无消息' : undefined)}
+                              >
+                                {i}
+                              </button>
+                            )
+                          }
+                          return days
+                        })()}
+                        {isLoadingDates && (
+                          <div className="calendar-loading-overlay">
+                            <Loader2 size={24} className="spin" />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="calendar-footer">
+                        <button
+                          className="date-jump-today"
+                          onClick={() => {
+                            const now = new Date()
+                            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+                            setSelectedDate(dateStr)
+                            setViewDate(now)
+                          }}
+                        >
+                          回到今天
+                        </button>
+                        <button
+                          className="date-jump-confirm"
+                          onClick={handleJumpToDate}
+                          disabled={!selectedDate || isJumpingToDate}
+                        >
+                          {isJumpingToDate ? (
+                            <><Loader2 size={14} className="spin" /> 跳转中...</>
+                          ) : (
+                            '跳转'
+                          )}
+                        </button>
+                      </div>
+                    </div>,
+                    document.body
+                  )}
+                </div>
                 <button
                   className={`icon-btn detail-btn ${showDetailPanel ? 'active' : ''}`}
                   onClick={toggleDetailPanel}
@@ -1534,6 +1801,12 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
     () => imageDataUrlCache.get(imageCacheKey)
   )
 
+  // 引用图片缓存
+  const quotedImageCacheKey = message.quotedImageMd5 || ''
+  const [quotedImageLocalPath, setQuotedImageLocalPath] = useState<string | undefined>(
+    () => quotedImageCacheKey ? imageDataUrlCache.get(quotedImageCacheKey) : undefined
+  )
+
   const formatTime = (timestamp: number): string => {
     const date = new Date(timestamp * 1000)
     return date.toLocaleDateString('zh-CN', {
@@ -2091,6 +2364,40 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
     }
   }, [isImage, imageCacheKey, message.imageDatName, message.imageMd5])
 
+  // 引用图片自动解密
+  useEffect(() => {
+    if (!message.quotedImageMd5) return
+    if (quotedImageLocalPath) return
+
+    const doDecrypt = async () => {
+      try {
+        // 先尝试从缓存获取
+        const cached = await window.electronAPI.image.resolveCache({
+          sessionId: session.username,
+          imageMd5: message.quotedImageMd5
+        })
+        if (cached.success && cached.localPath) {
+          imageDataUrlCache.set(message.quotedImageMd5!, cached.localPath)
+          setQuotedImageLocalPath(cached.localPath)
+          return
+        }
+
+        // 自动解密
+        const result = await window.electronAPI.image.decrypt({
+          sessionId: session.username,
+          imageMd5: message.quotedImageMd5,
+          force: false
+        })
+        if (result.success && result.localPath) {
+          imageDataUrlCache.set(message.quotedImageMd5!, result.localPath)
+          setQuotedImageLocalPath(result.localPath)
+        }
+      } catch { }
+    }
+
+    enqueueDecrypt(doDecrypt)
+  }, [message.quotedImageMd5, quotedImageLocalPath, session.username])
+
   if (isSystem) {
     // 系统类消息：包含“拍一拍”等 appmsg(type=62)
     let systemText = message.parsedContent || '[系统消息]'
@@ -2135,8 +2442,25 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
       return (
         <div className="bubble-content">
           <div className="quoted-message">
-            {message.quotedSender && <span className="quoted-sender">{message.quotedSender}</span>}
-            <span className="quoted-text">{message.quotedContent}</span>
+            <div className="quoted-message-content">
+              <div className="quoted-text-container">
+                {message.quotedSender && <span className="quoted-sender">{message.quotedSender}</span>}
+                <span className="quoted-text">{message.quotedContent}</span>
+              </div>
+              {quotedImageLocalPath && (
+                <div className="quoted-image-container">
+                  <img
+                    src={quotedImageLocalPath}
+                    alt="引用图片"
+                    className="quoted-image-thumb"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      window.electronAPI.window.openImageViewerWindow(quotedImageLocalPath)
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           </div>
           <div className="message-text"><MessageContent content={message.parsedContent} /></div>
         </div>
@@ -2500,6 +2824,66 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
         )
       }
 
+      // 聊天记录 (type=19)
+      if (appMsgType === '19') {
+        const recordList = message.chatRecordList || []
+        const displayTitle = title || '群聊的聊天记录'
+        const metaText =
+          recordList.length > 0
+            ? `共 ${recordList.length} 条聊天记录`
+            : desc || '聊天记录'
+
+        const previewItems = recordList.slice(0, 4)
+
+        return (
+          <div
+            className="link-message chat-record-message"
+            onClick={(e) => {
+              e.stopPropagation()
+              window.electronAPI.window.openChatHistoryWindow(session.username, message.localId)
+            }}
+            title="点击查看详细聊天记录"
+          >
+            <div className="link-header">
+              <div className="link-title" title={displayTitle}>
+                {displayTitle}
+              </div>
+            </div>
+            <div className="link-body">
+              <div className="chat-record-preview">
+                {previewItems.length > 0 ? (
+                  <>
+                    <div className="chat-record-meta-line" title={metaText}>
+                      {metaText}
+                    </div>
+                    <div className="chat-record-list">
+                      {previewItems.map((item, i) => (
+                        <div key={i} className="chat-record-item">
+                          <span className="source-name">
+                            {item.sourcename ? `${item.sourcename}: ` : ''}
+                          </span>
+                          {item.datadesc || item.datatitle || '[媒体消息]'}
+                        </div>
+                      ))}
+                      {recordList.length > previewItems.length && (
+                        <div className="chat-record-more">还有 {recordList.length - previewItems.length} 条…</div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="chat-record-desc">
+                    {desc || '点击打开查看完整聊天记录'}
+                  </div>
+                )}
+              </div>
+              <div className="chat-record-icon">
+                <MessageSquare size={18} />
+              </div>
+            </div>
+          </div>
+        )
+      }
+
       // 文件消息 (type=6)：渲染为文件卡片
       if (appMsgType === '6') {
         // 优先使用从接口获取的文件信息，否则从 XML 解析
@@ -2544,14 +2928,14 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
             }
 
             const wxid = userInfo.userInfo.wxid
-            
+
             // 文件存储在 {微信存储目录}\{账号文件夹}\msg\file\{年-月}\ 目录下
             // 根据消息创建时间计算日期目录
             const msgDate = new Date(message.createTime * 1000)
             const year = msgDate.getFullYear()
             const month = String(msgDate.getMonth() + 1).padStart(2, '0')
             const dateFolder = `${year}-${month}`
-            
+
             // 构建完整文件路径（包括文件名）
             const filePath = `${wechatDir}\\${wxid}\\msg\\file\\${dateFolder}\\${fileName}`
 
@@ -2563,7 +2947,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
               console.warn('无法定位到具体文件，尝试打开文件夹:', err)
               const fileDir = `${wechatDir}\\${wxid}\\msg\\file\\${dateFolder}`
               const result = await window.electronAPI.shell.openPath(fileDir)
-              
+
               // 如果还是失败，打开上级目录
               if (result) {
                 console.warn('无法打开月份文件夹，尝试打开上级目录')
@@ -2577,8 +2961,8 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
         }
 
         return (
-          <div 
-            className="file-message" 
+          <div
+            className="file-message"
             onClick={handleFileClick}
             style={{ cursor: 'pointer' }}
             title="点击定位到文件所在文件夹"

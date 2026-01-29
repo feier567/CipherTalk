@@ -205,84 +205,172 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
   }
 
   /**
-   * 简单的 XML 值提取辅助函数
-   */
-  private extractXmlValue(xml: string, tagName: string): string {
-    if (!xml) return ''
-    const regex = new RegExp(`<${tagName}(?:\\s+[^>]*)?>([\\s\\S]*?)</${tagName}>`, 'i')
-    const match = regex.exec(xml)
-    return match ? match[1].replace(/<!\[CDATA\[(.*?)]]>/g, '$1').trim() : ''
-  }
-
-  /**
-   * 格式化消息
-   */
-  /**
-   * 格式化消息
+   * 格式化消息（完全依赖后端解析结果，不重复解析）
    */
   private formatMessages(messages: Message[], contacts: Map<string, Contact>, sessionId: string): string {
-    return messages.map(msg => {
+    const formattedLines: string[] = []
+    
+    messages.forEach(msg => {
       // 获取发送者显示名称
       const contact = contacts.get(msg.senderUsername || '')
       const sender = contact?.remark || contact?.nickName || msg.senderUsername || '未知'
 
-      // 格式化时间
-      const time = new Date(msg.createTime * 1000).toLocaleString('zh-CN', {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-      })
+      // 格式化时间：YYYY-MM-DD-HH:MM:SS
+      const date = new Date(msg.createTime * 1000)
+      const time = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}-${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`
+
+      // 调试日志：检查聊天记录消息
+      if (msg.parsedContent && msg.parsedContent.includes('[聊天记录]')) {
+        console.log('[AIService] 发现聊天记录消息:', {
+          localType: msg.localType,
+          parsedContent: msg.parsedContent.substring(0, 100),
+          hasChatRecordList: !!msg.chatRecordList,
+          chatRecordListLength: msg.chatRecordList?.length || 0,
+          rawContentPreview: msg.rawContent?.substring(0, 200)
+        })
+      }
 
       // 处理不同类型的消息
-      let content = msg.parsedContent || ''
+      let content = ''
+      let messageType = '文本'
 
-      // 语音消息 (Type 34)
-      if (msg.localType === 34) {
-        // 尝试获取转写缓存
-        // 注意：转写服务使用的是会话ID+创建时间作为键
+      // 特殊处理1：聊天记录（有详细列表）
+      // 后端在 parseChatHistory() 中检查 <type>19</type> 并填充 chatRecordList
+      if (msg.chatRecordList && msg.chatRecordList.length > 0) {
+        messageType = '聊天记录'
+        const recordCount = msg.chatRecordList.length
+        const recordLines: string[] = []
+        
+        // 从 parsedContent 提取标题（格式：[聊天记录] 标题）
+        let title = '聊天记录'
+        if (msg.parsedContent && msg.parsedContent.startsWith('[聊天记录]')) {
+          title = msg.parsedContent.replace('[聊天记录]', '').trim() || '聊天记录'
+        }
+        
+        recordLines.push(title)
+        recordLines.push(`共${recordCount}条消息：`)
+        
+        // 遍历聊天记录列表
+        msg.chatRecordList.forEach((record, index) => {
+          const recordSender = record.sourcename || '未知'
+          
+          // 根据datatype判断消息类型
+          let recordContent = ''
+          if (record.datatype === 1) {
+            // 文本消息
+            recordContent = record.datadesc || record.datatitle || ''
+          } else if (record.datatype === 3) {
+            recordContent = '[图片]'
+          } else if (record.datatype === 34) {
+            recordContent = '[语音]'
+          } else if (record.datatype === 43) {
+            recordContent = '[视频]'
+          } else if (record.datatype === 47) {
+            recordContent = '[表情包]'
+          } else if (record.datatype === 8 || record.datatype === 49) {
+            // 文件消息
+            recordContent = `[文件] ${record.datatitle || record.datadesc || ''}`
+          } else {
+            recordContent = record.datadesc || record.datatitle || '[媒体消息]'
+          }
+          
+          recordLines.push(`  第${index + 1}条 - ${recordSender}: ${recordContent}`)
+        })
+        
+        content = recordLines.join('\n')
+      }
+      // 特殊处理2：语音消息 - 尝试获取转写文本
+      else if (msg.localType === 34) {
+        messageType = '语音'
         const transcript = voiceTranscribeService.getCachedTranscript(sessionId, msg.createTime)
-        content = transcript ? `[语音] ${transcript}` : '[语音]'
+        content = transcript || msg.parsedContent || '[语音消息]'
       }
-      // 视频 (Type 43)
-      else if (msg.localType === 43) {
-        content = '[视频]'
+      // 特殊处理3：撤回消息 - 跳过
+      else if (msg.localType === 10002) {
+        return
       }
-      // 表情包 (Type 47)
-      else if (msg.localType === 47) {
-        // 尝试从 rawContent 提取信息
-        const raw = msg.rawContent || ''
-        // 尝试提取 cdnurl 或其他标识，但通常表情包没有有意义的文本名字
-        // 这里主要区分是自定义表情还是商店表情
-        const md5 = this.extractXmlValue(raw, 'md5')
-        content = md5 ? `[表情包]` : '[表情包]'
-      }
-      // 文件/链接 (Type 49)
-      else if (msg.localType === 49) {
-        // 提取标题和链接/描述
-        const raw = msg.rawContent || ''
-        const title = this.extractXmlValue(raw, 'title')
-        const url = this.extractXmlValue(raw, 'url')
-        const desc = this.extractXmlValue(raw, 'des')
-
-        let label = '[文件/链接]'
-        const type = this.extractXmlValue(raw, 'type')
-        if (type === '5') label = '[链接]' // 网页链接
-        if (type === '6') label = '[文件]' // 文件
-        if (type === '33' || type === '36') label = '[小程序]'
-        if (type === '57') label = '[引用]' // 引用产生的 AppMsg
-
-        if (title) {
-          content = `${label} ${title}`
-          if (url && type === '5') content += ` (${url})`
-          else if (desc && type !== '57' && desc.length < 50) content += ` - ${desc}`
+      // 其他所有消息：直接使用后端解析的 parsedContent
+      else {
+        content = msg.parsedContent || '[消息]'
+        
+        // 根据 parsedContent 的前缀判断消息类型
+        if (content.startsWith('[图片]')) {
+          messageType = '图片'
+        } else if (content.startsWith('[视频]')) {
+          messageType = '视频'
+        } else if (content.startsWith('[动画表情]') || content.startsWith('[表情包]')) {
+          messageType = '表情包'
+        } else if (content.startsWith('[文件]')) {
+          messageType = '文件'
+        } else if (content.startsWith('[转账]')) {
+          messageType = '转账'
+        } else if (content.startsWith('[链接]')) {
+          messageType = '链接'
+        } else if (content.startsWith('[小程序]')) {
+          messageType = '小程序'
+        } else if (content.startsWith('[聊天记录]')) {
+          messageType = '聊天记录'
+        } else if (content.startsWith('[引用消息]') || msg.localType === 244813135921) {
+          messageType = '引用'
+        } else if (content.startsWith('[位置]')) {
+          messageType = '位置'
+        } else if (content.startsWith('[名片]')) {
+          messageType = '名片'
+        } else if (content.startsWith('[通话]')) {
+          messageType = '通话'
+        } else if (msg.localType === 10000) {
+          messageType = '系统'
+        } else if (msg.localType === 1) {
+          messageType = '文本'
         } else {
-          content = label
+          // 未知类型，记录日志以便调试
+          console.log(`[AIService] 未知消息类型: localType=${msg.localType}, parsedContent=${content.substring(0, 100)}`)
+          messageType = '未知'
         }
       }
 
-      return `[${time}] ${sender}: ${content}`
-    }).join('\n')
+      // 跳过空内容的消息（但保留图片、视频、表情包等媒体消息）
+      if (!content && messageType !== '图片' && messageType !== '视频' && messageType !== '表情包') {
+        return
+      }
+
+      // 格式化输出：[消息类型] {发送者：时间 内容}
+      if (messageType === '文本') {
+        formattedLines.push(`[文本] {${sender}：${time} ${content}}`)
+      } else if (messageType === '转账') {
+        formattedLines.push(`[转账] {${sender}：${time} ${content}}`)
+      } else if (messageType === '链接') {
+        formattedLines.push(`[链接] {${sender}：${time} ${content}}`)
+      } else if (messageType === '文件') {
+        formattedLines.push(`[文件] {${sender}：${time} ${content}}`)
+      } else if (messageType === '语音') {
+        formattedLines.push(`[语音] {${sender}：${time} ${content}}`)
+      } else if (messageType === '图片') {
+        formattedLines.push(`[图片] {${sender}：${time}}`)
+      } else if (messageType === '视频') {
+        formattedLines.push(`[视频] {${sender}：${time}}`)
+      } else if (messageType === '表情包') {
+        formattedLines.push(`[表情包] {${sender}：${time}}`)
+      } else if (messageType === '小程序') {
+        formattedLines.push(`[小程序] {${sender}：${time} ${content}}`)
+      } else if (messageType === '聊天记录') {
+        formattedLines.push(`[聊天记录] {${sender}：${time} ${content}}`)
+      } else if (messageType === '引用') {
+        formattedLines.push(`[引用] {${sender}：${time} ${content}}`)
+      } else if (messageType === '位置') {
+        formattedLines.push(`[位置] {${sender}：${time} ${content}}`)
+      } else if (messageType === '名片') {
+        formattedLines.push(`[名片] {${sender}：${time} ${content}}`)
+      } else if (messageType === '通话') {
+        formattedLines.push(`[通话] {${sender}：${time} ${content}}`)
+      } else if (messageType === '系统') {
+        formattedLines.push(`[系统消息] {${time} ${content}}`)
+      } else {
+        formattedLines.push(`[${messageType}] {${sender}：${time} ${content}}`)
+      }
+    })
+
+    return formattedLines.join('\n')
   }
 
   /**

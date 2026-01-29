@@ -83,6 +83,8 @@ let purchaseWindow: BrowserWindow | null = null
 let aiSummaryWindow: BrowserWindow | null = null
 // 引导窗口实例
 let welcomeWindow: BrowserWindow | null = null
+// 聊天记录窗口实例
+let chatHistoryWindow: BrowserWindow | null = null
 
 /**
  * 获取当前主题的 URL 查询参数
@@ -308,6 +310,87 @@ function createGroupAnalyticsWindow() {
   })
 
   return groupAnalyticsWindow
+}
+
+/**
+ * 创建独立的聊天记录窗口
+ */
+function createChatHistoryWindow(sessionId: string, messageId: number) {
+  // 如果已存在，聚焦到现有窗口
+  if (chatHistoryWindow && !chatHistoryWindow.isDestroyed()) {
+    if (chatHistoryWindow.isMinimized()) {
+      chatHistoryWindow.restore()
+    }
+    chatHistoryWindow.focus()
+
+    // 导航到新记录
+    const themeParams = getThemeQueryParams()
+    if (process.env.VITE_DEV_SERVER_URL) {
+      chatHistoryWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}?${themeParams}#/chat-history/${sessionId}/${messageId}`)
+    } else {
+      chatHistoryWindow.loadFile(join(__dirname, '../dist/index.html'), {
+        hash: `/chat-history/${sessionId}/${messageId}`,
+        query: { theme: configService?.get('theme') || 'cloud-dancer', mode: configService?.get('themeMode') || 'light' }
+      })
+    }
+    return chatHistoryWindow
+  }
+
+  const isDev = !!process.env.VITE_DEV_SERVER_URL
+  const iconPath = isDev
+    ? join(__dirname, '../public/icon.ico')
+    : join(process.resourcesPath, 'icon.ico')
+
+  const isDark = nativeTheme.shouldUseDarkColors
+
+  chatHistoryWindow = new BrowserWindow({
+    width: 600,
+    height: 800,
+    minWidth: 400,
+    minHeight: 500,
+    icon: iconPath,
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    },
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#00000000',
+      symbolColor: isDark ? '#ffffff' : '#1a1a1a',
+      height: 32
+    },
+    show: false,
+    backgroundColor: isDark ? '#1A1A1A' : '#F0F0F0',
+    autoHideMenuBar: true
+  })
+
+  chatHistoryWindow.once('ready-to-show', () => {
+    chatHistoryWindow?.show()
+  })
+
+  const themeParams = getThemeQueryParams()
+  if (process.env.VITE_DEV_SERVER_URL) {
+    chatHistoryWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}?${themeParams}#/chat-history/${sessionId}/${messageId}`)
+
+    chatHistoryWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'F12' || (input.control && input.shift && input.key === 'I')) {
+        chatHistoryWindow?.webContents.openDevTools()
+        event.preventDefault()
+      }
+    })
+  } else {
+    chatHistoryWindow.loadFile(join(__dirname, '../dist/index.html'), {
+      hash: `/chat-history/${sessionId}/${messageId}`,
+      query: { theme: configService?.get('theme') || 'cloud-dancer', mode: configService?.get('themeMode') || 'light' }
+    })
+  }
+
+  chatHistoryWindow.on('closed', () => {
+    chatHistoryWindow = null
+  })
+
+  return chatHistoryWindow
 }
 
 /**
@@ -1083,6 +1166,17 @@ function registerIpcHandlers() {
     return true
   })
 
+  // 打开聊天记录窗口
+  ipcMain.handle('window:openChatHistoryWindow', (_, sessionId: string, messageId: number) => {
+    createChatHistoryWindow(sessionId, messageId)
+    return true
+  })
+
+  // 获取单条消息
+  ipcMain.handle('chat:getMessage', async (_, sessionId: string, localId: number) => {
+    return chatService.getMessageByLocalId(sessionId, localId)
+  })
+
   // 更新窗口控件主题色
   ipcMain.on('window:setTitleBarOverlay', (event, options: { symbolColor: string }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -1595,6 +1689,22 @@ function registerIpcHandlers() {
     const result = await chatService.getVoiceData(sessionId, msgId, createTime)
     if (!result.success) {
       logService?.warn('Chat', '获取语音数据失败', { sessionId, msgId, createTime, error: result.error })
+    }
+    return result
+  })
+
+  ipcMain.handle('chat:getMessagesByDate', async (_, sessionId: string, targetTimestamp: number, limit?: number) => {
+    const result = await chatService.getMessagesByDate(sessionId, targetTimestamp, limit)
+    if (!result.success) {
+      logService?.warn('Chat', '按日期获取消息失败', { sessionId, targetTimestamp, error: result.error })
+    }
+    return result
+  })
+
+  ipcMain.handle('chat:getDatesWithMessages', async (_, sessionId: string, year: number, month: number) => {
+    const result = await chatService.getDatesWithMessages(sessionId, year, month)
+    if (!result.success) {
+      logService?.warn('Chat', '获取有消息日期失败', { sessionId, year, month, error: result.error })
     }
     return result
   })

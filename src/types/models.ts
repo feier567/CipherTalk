@@ -51,6 +51,7 @@ export interface Message {
   // 引用消息
   quotedContent?: string
   quotedSender?: string
+  quotedImageMd5?: string
   // 视频相关
   videoMd5?: string
   rawContent?: string
@@ -60,6 +61,30 @@ export interface Message {
   fileSize?: number       // 文件大小（字节）
   fileExt?: string        // 文件扩展名
   fileMd5?: string        // 文件 MD5
+  chatRecordList?: ChatRecordItem[] // 聊天记录列表 (Type 19)
+}
+
+export interface ChatRecordItem {
+  datatype: number
+  datadesc?: string
+  datatitle?: string
+  sourcename?: string
+  sourcetime?: string
+  sourceheadurl?: string
+  fileext?: string
+  datasize?: number
+  messageuuid?: string
+  // 媒体信息
+  dataurl?: string      // 原始地址
+  datathumburl?: string // 缩略图地址
+  datacdnurl?: string   // CDN地址
+  qaeskey?: string      // AES Key (通常在 recorditem 中是 qaeskey 或 aeskey)
+  aeskey?: string
+  md5?: string
+  imgheight?: number
+  imgwidth?: number
+  thumbheadurl?: string // 视频/图片缩略图
+  duration?: number     // 语音/视频时长
 }
 
 // 分析数据

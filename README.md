@@ -7,13 +7,29 @@
 **一款现代化的微信聊天记录查看与分析工具**
 
 [![License](https://img.shields.io/badge/license-CC--BY--NC--SA--4.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.1.5-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.1.6-green.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg?logo=windows)]()
 [![Electron](https://img.shields.io/badge/Electron-39-47848F.svg?logo=electron)]()
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react)]()
 [![Telegram](https://img.shields.io/badge/Telegram-Join%20Group-26A5E4.svg?logo=telegram)](https://t.me/+toZ7bY15IZo3NjVl)
 
 [功能特性](#-功能特性) • [快速开始](#-快速开始) • [技术栈](#️-技术栈) • [贡献指南](#-贡献指南) • [许可证](#-许可证)
+
+</div>
+
+---
+
+## 💖 赞助支持
+
+如果这个项目对你有帮助，欢迎通过爱发电支持我们的开发工作！
+
+<div align="center">
+
+<a href="https://afdian.com/a/ILoveBingLu">
+  <img src="aifadian.jpg" alt="爱发电" width="300" />
+</a>
+
+你的支持是我们持续更新的动力 ❤️
 
 </div>
 

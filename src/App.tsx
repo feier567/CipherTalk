@@ -21,6 +21,7 @@ import VideoWindow from './pages/VideoWindow'
 import BrowserWindowPage from './pages/BrowserWindowPage'
 import SplashPage from './pages/SplashPage'
 import AISummaryWindow from './pages/AISummaryWindow'
+import ChatHistoryPage from './pages/ChatHistoryPage'
 import { useAppStore } from './stores/appStore'
 import { useThemeStore } from './stores/themeStore'
 import { useChatStore } from './stores/chatStore'
@@ -263,6 +264,15 @@ function App() {
     return <AISummaryWindow />
   }
 
+  // 独立聊天记录窗口
+  if (location.pathname.startsWith('/chat-history/')) {
+    return (
+      <div className="chat-window-container">
+        <ChatHistoryPage />
+      </div>
+    )
+  }
+
   // 独立引导窗口
   if (isWelcomeWindow) {
     return <WelcomePage standalone />
@@ -441,6 +451,7 @@ function App() {
               <Route path="/data-management" element={<DataManagementPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/export" element={<ExportPage />} />
+              <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
             </Routes>
           </RouteGuard>
         </main>

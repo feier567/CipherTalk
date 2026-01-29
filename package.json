@@ -1,6 +1,6 @@
 {
   "name": "ciphertalk",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "description": "密语 - 微信聊天记录查看工具",
   "author": "ILoveBingLu",
   "license": "CC-BY-NC-SA-4.0",
@@ -22,6 +22,7 @@
     "@types/marked": "^5.0.2",
     "@types/react-virtualized-auto-sizer": "^1.0.4",
     "@types/react-window": "^1.8.8",
+    "@xmldom/xmldom": "^0.9.6",
     "better-sqlite3": "^12.5.0",
     "dom-to-image-more": "^3.7.2",
     "dompurify": "^3.3.1",
