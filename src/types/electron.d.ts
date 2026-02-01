@@ -55,8 +55,20 @@ export interface ElectronAPI {
     checkForUpdates: () => Promise<{ hasUpdate: boolean; version?: string; releaseNotes?: string }>
     downloadAndInstall: () => Promise<void>
     getStartupDbConnected?: () => Promise<boolean>
+    setAppIcon: (iconName: string) => Promise<void>
     onDownloadProgress: (callback: (progress: number) => void) => () => void
     onUpdateAvailable: (callback: (info: { version: string; releaseNotes: string }) => void) => () => void
+  }
+  // Windows Hello 原生验证 (比 WebAuthn 更快)
+  windowsHello: {
+    /** 检查 Windows Hello 是否可用 */
+    isAvailable: () => Promise<boolean>
+    /** 请求 Windows Hello 验证 */
+    verify: (message?: string) => Promise<{
+      success: boolean
+      result: number  // 0=成功, 1=设备不存在, 2=未配置, 3=策略禁用, 4=设备忙, 5=重试耗尽, 6=取消, 99=未知错误
+      error?: string
+    }>
   }
   wxKey: {
     isWeChatRunning: () => Promise<boolean>

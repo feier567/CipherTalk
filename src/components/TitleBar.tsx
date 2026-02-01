@@ -2,6 +2,7 @@ import { ReactNode, useEffect } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { useTitleBarStore } from '../stores/titleBarStore'
 import { useUpdateStatusStore } from '../stores/updateStatusStore'
+import { useThemeStore } from '../stores/themeStore'
 import './TitleBar.scss'
 
 interface TitleBarProps {
@@ -13,6 +14,7 @@ function TitleBar({ rightContent, title }: TitleBarProps) {
   const storeRightContent = useTitleBarStore(state => state.rightContent)
   const displayContent = rightContent ?? storeRightContent
   const isUpdating = useUpdateStatusStore(state => state.isUpdating)
+  const appIcon = useThemeStore(state => state.appIcon)
 
   // 调试：检查状态
   useEffect(() => {
@@ -24,7 +26,7 @@ function TitleBar({ rightContent, title }: TitleBarProps) {
   return (
     <div className="title-bar">
       <div className="title-bar-left">
-        <img src="./logo.png" alt="密语" className="title-logo" />
+        <img src={appIcon === 'xinnian' ? "./xinnian.png" : "./logo.png"} alt="密语" className="title-logo" />
         <span className="titles">{title || 'CipherTalk'}</span>
         {isUpdating && (
           <div className="update-status">

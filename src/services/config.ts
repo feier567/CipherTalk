@@ -20,7 +20,15 @@ export const CONFIG_KEYS = {
   SKIP_INTEGRITY_CHECK: 'skipIntegrityCheck',
   EXPORT_DEFAULT_DATE_RANGE: 'exportDefaultDateRange',
   EXPORT_DEFAULT_AVATARS: 'exportDefaultAvatars',
-  AUTO_UPDATE_DATABASE: 'autoUpdateDatabase'
+  AUTO_UPDATE_DATABASE: 'autoUpdateDatabase',
+  // 自动同步高级参数
+  AUTO_UPDATE_CHECK_INTERVAL: 'autoUpdateCheckInterval',     // 检查间隔（秒）
+  AUTO_UPDATE_MIN_INTERVAL: 'autoUpdateMinInterval',         // 最小更新间隔（毫秒）
+  AUTO_UPDATE_DEBOUNCE_TIME: 'autoUpdateDebounceTime',       // 防抖时间（毫秒）
+  AUTH_ENABLED: 'authEnabled',
+  AUTH_CREDENTIAL_ID: 'authCredentialId',
+  AUTH_PASSWORD_HASH: 'authPasswordHash',
+  AUTH_PASSWORD_SALT: 'authPasswordSalt'
 } as const
 
 // 当前协议版本 - 更新协议内容时递增此版本号
@@ -38,6 +46,42 @@ export async function getAutoUpdateDatabase(): Promise<boolean> {
 export async function setAutoUpdateDatabase(enable: boolean): Promise<void> {
   await config.set(CONFIG_KEYS.AUTO_UPDATE_DATABASE, enable)
 }
+
+// --- 自动同步高级参数 ---
+
+// 获取检查间隔（秒），默认 60 秒
+export async function getAutoUpdateCheckInterval(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.AUTO_UPDATE_CHECK_INTERVAL)
+  return (value as number) || 60
+}
+
+// 设置检查间隔（秒）
+export async function setAutoUpdateCheckInterval(seconds: number): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTO_UPDATE_CHECK_INTERVAL, Math.max(10, Math.min(600, seconds)))
+}
+
+// 获取最小更新间隔（毫秒），默认 1000 毫秒
+export async function getAutoUpdateMinInterval(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.AUTO_UPDATE_MIN_INTERVAL)
+  return (value as number) || 1000
+}
+
+// 设置最小更新间隔（毫秒）
+export async function setAutoUpdateMinInterval(ms: number): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTO_UPDATE_MIN_INTERVAL, Math.max(500, Math.min(10000, ms)))
+}
+
+// 获取防抖时间（毫秒），默认 500 毫秒
+export async function getAutoUpdateDebounceTime(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.AUTO_UPDATE_DEBOUNCE_TIME)
+  return (value as number) || 500
+}
+
+// 设置防抖时间（毫秒）
+export async function setAutoUpdateDebounceTime(ms: number): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTO_UPDATE_DEBOUNCE_TIME, Math.max(100, Math.min(5000, ms)))
+}
+
 
 
 // --- AI 摘要配置 ---
@@ -234,6 +278,53 @@ export async function setExportDefaultAvatars(exportAvatars: boolean): Promise<v
 }
 
 
+// --- 安全认证配置 ---
+
+// 获取是否启用 Windows Hello 认证
+export async function getAuthEnabled(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.AUTH_ENABLED)
+  return (value as boolean) || false
+}
+
+// 设置是否启用 Windows Hello 认证
+export async function setAuthEnabled(enable: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTH_ENABLED, enable)
+}
+
+// 获取认证凭证 ID
+export async function getAuthCredentialId(): Promise<string | null> {
+  const value = await config.get(CONFIG_KEYS.AUTH_CREDENTIAL_ID)
+  return (value as string) || null
+}
+
+// 设置认证凭证 ID
+export async function setAuthCredentialId(id: string | null): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTH_CREDENTIAL_ID, id)
+}
+
+// 获取密码哈希
+export async function getAuthPasswordHash(): Promise<string | null> {
+  const value = await config.get(CONFIG_KEYS.AUTH_PASSWORD_HASH)
+  return (value as string) || null
+}
+
+// 设置密码哈希
+export async function setAuthPasswordHash(hash: string | null): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTH_PASSWORD_HASH, hash)
+}
+
+// 获取密码盐值
+export async function getAuthPasswordSalt(): Promise<string | null> {
+  const value = await config.get(CONFIG_KEYS.AUTH_PASSWORD_SALT)
+  return (value as string) || null
+}
+
+// 设置密码盐值
+export async function setAuthPasswordSalt(salt: string | null): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTH_PASSWORD_SALT, salt)
+}
+
+
 // --- AI 摘要配置 ---
 
 // 获取当前选中的 AI 提供商
@@ -333,4 +424,15 @@ export async function getAiEnableThinking(): Promise<boolean> {
 // 设置是否启用思考模式
 export async function setAiEnableThinking(enable: boolean): Promise<void> {
   await config.set('aiEnableThinking', enable)
+}
+
+// 获取摘要提取消息条数限制
+export async function getAiMessageLimit(): Promise<number> {
+  const value = await config.get('aiMessageLimit')
+  return (value as number) || 3000
+}
+
+// 设置摘要提取消息条数限制
+export async function setAiMessageLimit(limit: number): Promise<void> {
+  await config.set('aiMessageLimit', limit)
 }

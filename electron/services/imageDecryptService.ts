@@ -677,11 +677,114 @@ export class ImageDecryptService {
 
     const root = join(accountDir, 'msg', 'attach')
     if (!existsSync(root)) return null
+
+    // 优化1：快速概率性查找
+    // 包含：1. 基于文件名的前缀猜测 (旧版)
+    //       2. 基于日期的最近月份扫描 (新版无索引时)
+    const fastHit = await this.fastProbabilisticSearch(root, datName)
+    if (fastHit) {
+      this.resolvedCache.set(key, fastHit)
+      return fastHit
+    }
+
+    // 优化2：兜底扫描 (异步非阻塞)
     const found = await this.walkForDatInWorker(root, datName.toLowerCase(), 8, allowThumbnail, thumbOnly)
     if (found) {
       this.resolvedCache.set(key, found)
       return found
     }
+    return null
+  }
+
+  /**
+   * 基于文件名的哈希特征猜测可能的路径
+   * 包含：1. 微信旧版结构 filename.substr(0, 2)/...
+   *       2. 微信新版结构 msg/attach/{hash}/{YYYY-MM}/Img/filename
+   */
+  private async fastProbabilisticSearch(root: string, datName: string): Promise<string | null> {
+    const { promises: fs } = require('fs')
+    const { join } = require('path')
+
+    try {
+      // --- 策略 A: 旧版路径猜测 (msg/attach/xx/yy/...) ---
+      const lowerName = datName.toLowerCase()
+      let baseName = lowerName
+      if (baseName.endsWith('.dat')) {
+        baseName = baseName.slice(0, -4)
+        if (baseName.endsWith('_t') || baseName.endsWith('.t') || baseName.endsWith('_hd')) {
+          baseName = baseName.slice(0, -3)
+        } else if (baseName.endsWith('_thumb')) {
+          baseName = baseName.slice(0, -6)
+        }
+      }
+
+      const candidates: string[] = []
+      if (/^[a-f0-9]{32}$/.test(baseName)) {
+        const dir1 = baseName.substring(0, 2)
+        const dir2 = baseName.substring(2, 4)
+        candidates.push(
+          join(root, dir1, dir2, datName),
+          join(root, dir1, dir2, 'Img', datName),
+          join(root, dir1, dir2, 'mg', datName),
+          join(root, dir1, dir2, 'Image', datName)
+        )
+      }
+
+      for (const path of candidates) {
+        try {
+          await fs.access(path)
+          return path
+        } catch { }
+      }
+
+      // --- 策略 B: 新版 Session 哈希路径猜测 ---
+      try {
+        const entries = await fs.readdir(root, { withFileTypes: true })
+        const sessionDirs = entries
+          .filter((e: any) => e.isDirectory() && e.name.length === 32 && /^[a-f0-9]+$/i.test(e.name))
+          .map((e: any) => e.name)
+
+        if (sessionDirs.length === 0) return null
+
+        const now = new Date()
+        const months: string[] = []
+        for (let i = 0; i < 2; i++) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+          const mStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+          months.push(mStr)
+        }
+
+        const targetNames = [datName]
+        if (baseName !== lowerName) {
+          targetNames.push(`${baseName}.dat`)
+          targetNames.push(`${baseName}_t.dat`)
+          targetNames.push(`${baseName}_thumb.dat`)
+        }
+
+        const batchSize = 20
+        for (let i = 0; i < sessionDirs.length; i += batchSize) {
+          const batch = sessionDirs.slice(i, i + batchSize)
+          const tasks = batch.map(async (sessDir: string) => {
+            for (const month of months) {
+              const subDirs = ['Img', 'Image']
+              for (const sub of subDirs) {
+                const dirPath = join(root, sessDir, month, sub)
+                try { await fs.access(dirPath) } catch { continue }
+                for (const name of targetNames) {
+                  const p = join(dirPath, name)
+                  try { await fs.access(p); return p } catch { }
+                }
+              }
+            }
+            return null
+          })
+          const results = await Promise.all(tasks)
+          const hit = results.find(r => r !== null)
+          if (hit) return hit
+        }
+      } catch { }
+
+    } catch { }
     return null
   }
 
@@ -701,51 +804,45 @@ export class ImageDecryptService {
     allowThumbnail = true,
     thumbOnly = false
   ): Promise<string | null> {
-    // 简化为直接在主线程搜索，避免 worker 文件找不到的问题
-    // 使用非递归遍历以防止栈溢出，限制深度
+    const { promises: fs } = require('fs')
+    const { join } = require('path')
+
+    // 广度优先搜索 (BFS) 队列
     const queue: { path: string; depth: number }[] = [{ path: root, depth: 0 }]
     const targetBase = this.normalizeDatBase(datName.toLowerCase())
 
     while (queue.length > 0) {
-      const { path: currentPath, depth } = queue.shift()!
-      if (depth > maxDepth) continue
+      // 每次取出一批并行处理，提高 IO 吞吐
+      const batchSize = 10
+      const batch = queue.splice(0, batchSize)
 
-      try {
-        const entries = readdirSync(currentPath, { withFileTypes: true })
-        for (const entry of entries) {
-          const fullPath = join(currentPath, entry.name)
-
-          if (entry.isDirectory()) {
-            // 优化：只进入特定的图片存储相关目录
-            const lowerName = entry.name.toLowerCase()
-            // 顶层目录过滤
-            if (depth === 0) {
-              if (['image', 'image2', 'msg', 'attach', 'img'].some(k => lowerName.includes(k))) {
-                queue.push({ path: fullPath, depth: depth + 1 })
-              }
-            } else {
-              // 子目录一般直接进入，因为结构比较复杂
+      const results = await Promise.all(batch.map(async ({ path: currentPath, depth }) => {
+        if (depth > maxDepth) return null
+        try {
+          const entries = await fs.readdir(currentPath, { withFileTypes: true })
+          for (const entry of entries) {
+            const fullPath = join(currentPath, entry.name)
+            if (entry.isDirectory()) {
               queue.push({ path: fullPath, depth: depth + 1 })
-            }
-          } else if (entry.isFile()) {
-            // 匹配文件
-            const lowerName = entry.name.toLowerCase()
-            if (!lowerName.endsWith('.dat')) continue
+            } else if (entry.isFile()) {
+              const lowerName = entry.name.toLowerCase()
+              if (!lowerName.endsWith('.dat')) continue
 
-            // 缩略图检查
-            const isThumb = this.isThumbnailDat(lowerName)
-            if (thumbOnly && !isThumb) continue
-            if (!allowThumbnail && isThumb) continue
+              const isThumb = this.isThumbnailDat(lowerName)
+              if (thumbOnly && !isThumb) continue
+              if (!allowThumbnail && isThumb) continue
 
-            // 匹配逻辑
-            if (this.matchesDatName(entry.name, datName)) {
-              return fullPath
+              if (this.matchesDatName(entry.name, datName)) {
+                return fullPath
+              }
             }
           }
-        }
-      } catch (e) {
-        // 忽略无法访问的目录
-      }
+        } catch { }
+        return null
+      }))
+
+      const found = results.find(r => r !== null)
+      if (found) return found
     }
     return null
   }

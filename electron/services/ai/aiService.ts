@@ -7,6 +7,8 @@ import { DoubaoProvider, DoubaoMetadata } from './providers/doubao'
 import { KimiProvider, KimiMetadata } from './providers/kimi'
 import { SiliconFlowProvider, SiliconFlowMetadata } from './providers/siliconflow'
 import { XiaomiProvider, XiaomiMetadata } from './providers/xiaomi'
+import { TencentProvider, TencentMetadata } from './providers/tencent'
+import { XAIProvider, XAIMetadata } from './providers/xai'
 import { OpenAIProvider, OpenAIMetadata } from './providers/openai'
 import { GeminiProvider, GeminiMetadata } from './providers/gemini'
 import { OllamaProvider, OllamaMetadata } from './providers/ollama'
@@ -83,17 +85,19 @@ class AIService {
    */
   getAllProviders() {
     return [
-      CustomMetadata,
-      OllamaMetadata,
       OpenAIMetadata,
       GeminiMetadata,
+      XAIMetadata,
       DeepSeekMetadata,
       ZhipuMetadata,
       QwenMetadata,
       DoubaoMetadata,
       KimiMetadata,
       SiliconFlowMetadata,
-      XiaomiMetadata
+      XiaomiMetadata,
+      TencentMetadata,
+      OllamaMetadata,
+      CustomMetadata
     ]
   }
 
@@ -102,7 +106,7 @@ class AIService {
    */
   private getProvider(providerName?: string, apiKey?: string): AIProvider {
     const name = providerName || this.configService.getAICurrentProvider() || 'zhipu'
-    
+
     // 如果没有传入 apiKey，从配置中获取当前提供商的配置
     let key = apiKey
     if (!key) {
@@ -147,6 +151,10 @@ class AIService {
         return new SiliconFlowProvider(key!)
       case 'xiaomi':
         return new XiaomiProvider(key!)
+      case 'tencent':
+        return new TencentProvider(key!)
+      case 'xai':
+        return new XAIProvider(key!)
       default:
         throw new Error(`不支持的提供商: ${name}`)
     }
@@ -209,7 +217,7 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
    */
   private formatMessages(messages: Message[], contacts: Map<string, Contact>, sessionId: string): string {
     const formattedLines: string[] = []
-    
+
     messages.forEach(msg => {
       // 获取发送者显示名称
       const contact = contacts.get(msg.senderUsername || '')
@@ -240,20 +248,20 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
         messageType = '聊天记录'
         const recordCount = msg.chatRecordList.length
         const recordLines: string[] = []
-        
+
         // 从 parsedContent 提取标题（格式：[聊天记录] 标题）
         let title = '聊天记录'
         if (msg.parsedContent && msg.parsedContent.startsWith('[聊天记录]')) {
           title = msg.parsedContent.replace('[聊天记录]', '').trim() || '聊天记录'
         }
-        
+
         recordLines.push(title)
         recordLines.push(`共${recordCount}条消息：`)
-        
+
         // 遍历聊天记录列表
         msg.chatRecordList.forEach((record, index) => {
           const recordSender = record.sourcename || '未知'
-          
+
           // 根据datatype判断消息类型
           let recordContent = ''
           if (record.datatype === 1) {
@@ -273,10 +281,10 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
           } else {
             recordContent = record.datadesc || record.datatitle || '[媒体消息]'
           }
-          
+
           recordLines.push(`  第${index + 1}条 - ${recordSender}: ${recordContent}`)
         })
-        
+
         content = recordLines.join('\n')
       }
       // 特殊处理2：语音消息 - 尝试获取转写文本
@@ -292,7 +300,7 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
       // 其他所有消息：直接使用后端解析的 parsedContent
       else {
         content = msg.parsedContent || '[消息]'
-        
+
         // 根据 parsedContent 的前缀判断消息类型
         if (content.startsWith('[图片]')) {
           messageType = '图片'
@@ -448,7 +456,7 @@ ${formattedMessages}
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      { 
+      {
         model,
         enableThinking: options.enableThinking !== false  // 默认启用，除非明确设置为 false
       },
@@ -508,8 +516,8 @@ ${formattedMessages}
 
       return result
     } catch (error) {
-      return { 
-        success: false, 
+      return {
+        success: false,
         error: `连接失败: ${String(error)}`,
         needsProxy: true
       }
@@ -523,20 +531,20 @@ ${formattedMessages}
     if (!this.initialized) {
       this.init()
     }
-    
+
     const rawStats = aiDatabase.getUsageStats(startDate, endDate)
-    
+
     // 聚合统计数据
     let totalCount = 0
     let totalTokens = 0
     let totalCost = 0
-    
+
     for (const stat of rawStats) {
       totalCount += stat.request_count || 0
       totalTokens += stat.total_tokens || 0
       totalCost += stat.total_cost || 0
     }
-    
+
     return {
       totalCount,
       totalTokens,

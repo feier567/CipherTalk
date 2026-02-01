@@ -1,6 +1,6 @@
 {
   "name": "ciphertalk",
-  "version": "2.1.6",
+  "version": "2.1.8",
   "description": "密语 - 微信聊天记录查看工具",
   "author": "ILoveBingLu",
   "license": "CC-BY-NC-SA-4.0",
@@ -39,6 +39,7 @@
     "koffi": "^2.9.0",
     "lucide-react": "^0.562.0",
     "marked": "^17.0.1",
+    "onnxruntime-node": "^1.23.2",
     "openai": "^4.70.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
@@ -57,6 +58,7 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "adm-zip": "^0.5.16",
     "electron": "^39.2.7",
     "electron-builder": "^25.1.8",
     "sass": "^1.83.0",
@@ -81,7 +83,7 @@
       "url": "https://miyuapp.aiqji.com"
     },
     "win": {
-      "icon": "public/icon.ico",
+      "icon": "public/xinnian.ico",
       "target": "nsis",
       "requestedExecutionLevel": "asInvoker"
     },
@@ -98,9 +100,9 @@
       "language": "2052",
       "displayLanguageSelector": false,
       "include": "installer.nsh",
-      "installerIcon": "public/icon.ico",
-      "uninstallerIcon": "public/icon.ico",
-      "installerHeaderIcon": "public/icon.ico",
+      "installerIcon": "public/xinnian.ico",
+      "uninstallerIcon": "public/xinnian.ico",
+      "installerHeaderIcon": "public/xinnian.ico",
       "perMachine": false,
       "allowElevation": true,
       "installerSidebar": null,
@@ -114,6 +116,10 @@
       {
         "from": "public/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "public/xinnian.ico",
+        "to": "xinnian.ico"
       }
     ],
     "files": [

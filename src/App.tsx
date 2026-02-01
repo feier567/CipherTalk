@@ -29,6 +29,8 @@ import { useUpdateStatusStore } from './stores/updateStatusStore'
 import { useActivationStore } from './stores/activationStore'
 import * as configService from './services/config'
 import { initTldList } from './utils/linkify'
+import LockScreen from './pages/LockScreen'
+import { useAuthStore } from './stores/authStore'
 import { X, Shield } from 'lucide-react'
 import './App.scss'
 
@@ -38,6 +40,8 @@ function App() {
   const { setDbConnected } = useAppStore()
   const { currentTheme, themeMode, isLoaded, loadTheme } = useThemeStore()
   const { status: activationStatus, checkStatus: checkActivationStatus, initialized: activationInitialized } = useActivationStore()
+  const { isLocked, init: initAuth } = useAuthStore()
+
 
   // 协议同意状态
   const [showAgreement, setShowAgreement] = useState(false)
@@ -54,6 +58,8 @@ function App() {
     loadTheme()
     // 初始化 TLD 列表（优先从缓存读取）
     initTldList()
+    // 初始化认证状态
+    initAuth()
   }, [loadTheme])
 
   // 应用主题
@@ -457,6 +463,7 @@ function App() {
         </main>
       </div>
       <DecryptProgressOverlay />
+      {isLocked && <LockScreen />}
     </div>
   )
 }

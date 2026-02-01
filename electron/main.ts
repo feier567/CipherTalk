@@ -21,6 +21,8 @@ import { activationService } from './services/activationService'
 import { LogService } from './services/logService'
 import { videoService } from './services/videoService'
 import { voiceTranscribeService } from './services/voiceTranscribeService'
+import { windowsHelloService, WindowsHelloResult } from './services/windowsHelloService'
+import { shortcutService } from './services/shortcutService'
 
 // 注册自定义协议为特权协议（必须在 app ready 之前）
 protocol.registerSchemesAsPrivileged([
@@ -1046,6 +1048,42 @@ function registerIpcHandlers() {
     }
   })
 
+  ipcMain.handle('app:setAppIcon', async (_, iconName: string) => {
+    try {
+      const isDev = !!process.env.VITE_DEV_SERVER_URL
+      let iconPath = ''
+
+      if (iconName === 'xinnian') {
+        iconPath = isDev
+          ? join(__dirname, '../public/xinnian.ico')
+          : join(process.resourcesPath, 'xinnian.ico')
+      } else {
+        iconPath = isDev
+          ? join(__dirname, '../public/icon.ico')
+          : join(process.resourcesPath, 'icon.ico')
+      }
+
+      if (existsSync(iconPath)) {
+        const { nativeImage } = require('electron')
+        const image = nativeImage.createFromPath(iconPath)
+        BrowserWindow.getAllWindows().forEach(win => {
+          win.setIcon(image)
+        })
+
+        // 尝试更新桌面快捷方式图标 (不阻塞主线程)
+        shortcutService.updateDesktopShortcutIcon(iconPath).catch(err => {
+          console.error('更新快捷方式失败:', err)
+        })
+
+        return { success: true }
+      }
+      return { success: false, error: 'Icon not found' }
+    } catch (e) {
+      console.error('设置图标失败:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+
   ipcMain.handle('app:downloadAndInstall', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
 
@@ -1191,6 +1229,15 @@ function registerIpcHandlers() {
         // 忽略错误 - 某些窗口（如启动屏）没有启用 titleBarOverlay
       }
     }
+  })
+
+  // Windows Hello 原生验证 (比 WebAuthn 更快)
+  ipcMain.handle('windowsHello:isAvailable', async () => {
+    return windowsHelloService.isAvailable()
+  })
+
+  ipcMain.handle('windowsHello:verify', async (_, message?: string) => {
+    return windowsHelloService.verify(message)
   })
 
   // 密钥获取相关
@@ -2246,19 +2293,21 @@ function registerIpcHandlers() {
       // 初始化服务
       aiService.init()
 
-      // 获取消息（这里需要从 chatService 获取）
-      const messages = await chatService.getMessages(sessionId, 0, 1000)
-      if (!messages.success || !messages.messages) {
-        return { success: false, error: '获取消息失败' }
-      }
-
       // 计算时间范围
       const endTime = Math.floor(Date.now() / 1000)
       const startTime = endTime - (timeRange * 24 * 60 * 60)
 
-      // 过滤时间范围内的消息
-      const filteredMessages = messages.messages.filter((msg: any) =>
-        msg.createTime >= startTime && msg.createTime <= endTime
+      // 获取消息（使用 getMessagesByDate 获取指定时间范围内的消息）
+      // 使用用户配置的条数限制（默认 3000）
+      const messageLimit = configService?.get('aiMessageLimit') || 3000
+      const messagesResult = await chatService.getMessagesByDate(sessionId, startTime, messageLimit)
+      if (!messagesResult.success || !messagesResult.messages) {
+        return { success: false, error: '获取消息失败' }
+      }
+
+      // 过滤时间范围内的消息 (getMessagesByDate 返回的是 >= startTime 的消息)
+      const filteredMessages = messagesResult.messages.filter((msg: any) =>
+        msg.createTime <= endTime
       )
 
       if (filteredMessages.length === 0) {

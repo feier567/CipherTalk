@@ -10,13 +10,13 @@ export const GeminiMetadata = {
   displayName: 'Gemini',
   description: 'Google 最新的多模态 AI 模型',
   models: [
-    'gemini-3-pro-preview',
-    'gemini-3-flash-preview',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-    'gemini-2.5-pro',
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite'
+    'Gemini 3 Pro Preview',
+    'Gemini 3 Flash Preview',
+    'Gemini 2.5 Flash',
+    'Gemini 2.5 Flash Lite',
+    'Gemini 2.5 Pro',
+    'Gemini 2.0 Flash',
+    'Gemini 2.0 Flash Lite'
   ],
   pricing: '按量计费',
   pricingDetail: {
@@ -25,6 +25,16 @@ export const GeminiMetadata = {
   },
   website: 'https://ai.google.dev/',
   logo: './AI-logo/gemini-color.svg'
+}
+
+const MODEL_MAPPING: Record<string, string> = {
+  'Gemini 3 Pro Preview': 'gemini-3-pro-preview',
+  'Gemini 3 Flash Preview': 'gemini-3-flash-preview',
+  'Gemini 2.5 Flash': 'gemini-2.5-flash',
+  'Gemini 2.5 Flash Lite': 'gemini-2.5-flash-lite',
+  'Gemini 2.5 Pro': 'gemini-2.5-pro',
+  'Gemini 2.0 Flash': 'gemini-2.0-flash',
+  'Gemini 2.0 Flash Lite': 'gemini-2.0-flash-lite'
 }
 
 /**
@@ -43,6 +53,21 @@ export class GeminiProvider extends BaseAIProvider {
   }
 
   /**
+   * 获取真实模型ID
+   */
+  private getModelId(displayName: string): string {
+    return MODEL_MAPPING[displayName] || displayName
+  }
+
+  /**
+   * 重写 chat 方法以使用映射后的模型ID
+   */
+  async chat(messages: any[], options?: any): Promise<string> {
+    const modelId = this.getModelId(options?.model || this.models[0])
+    return super.chat(messages, { ...options, model: modelId })
+  }
+
+  /**
    * 重写 streamChat 以适配 Gemini API
    * Gemini 使用 XML 标签 <thought> 来标记思考内容，需要特殊处理
    */
@@ -53,8 +78,9 @@ export class GeminiProvider extends BaseAIProvider {
   ): Promise<void> {
     const client = await this.getClient()
     const enableThinking = options?.enableThinking !== false
-    const model = options?.model || this.models[0]
-    
+    const displayName = options?.model || this.models[0]
+    const model = this.getModelId(displayName)
+
     // 构建请求参数
     const requestParams: any = {
       model: model,
@@ -62,17 +88,17 @@ export class GeminiProvider extends BaseAIProvider {
       temperature: options?.temperature || 0.7,
       stream: true
     }
-    
+
     if (options?.maxTokens) {
       requestParams.max_tokens = options.maxTokens
     }
-    
+
     // Gemini 的思考模式控制
     // 注意：reasoning_effort 和 thinking_config 不能同时使用
     // 我们使用 thinking_config 因为它支持 include_thoughts
     const isGemini3 = model.includes('gemini-3')
     const isGemini25 = model.includes('gemini-2.5') || model.includes('gemini-2-5')
-    
+
     // 使用 extra_body 配置思考模式
     if (isGemini3) {
       // Gemini 3: 使用 thinking_level (low/high)
@@ -98,7 +124,7 @@ export class GeminiProvider extends BaseAIProvider {
       // 其他模型：使用 reasoning_effort
       requestParams.reasoning_effort = enableThinking ? 'medium' : 'none'
     }
-    
+
     const stream = await client.chat.completions.create(requestParams) as any
 
     let buffer = ''
@@ -107,11 +133,11 @@ export class GeminiProvider extends BaseAIProvider {
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta
       const content = delta?.content || ''
-      
+
       if (!content) continue
-      
+
       buffer += content
-      
+
       // 处理 Gemini 的 <thought> 标签
       // 检测开始标签
       if (buffer.includes('<thought>')) {
@@ -125,7 +151,7 @@ export class GeminiProvider extends BaseAIProvider {
         isInThought = true
         buffer = parts[1] || ''
       }
-      
+
       // 检测结束标签
       if (buffer.includes('</thought>')) {
         const parts = buffer.split('</thought>')
@@ -137,7 +163,7 @@ export class GeminiProvider extends BaseAIProvider {
         onChunk('</think>')
         isInThought = false
         buffer = parts[1] || ''
-        
+
         // 如果还有剩余内容，继续发送
         if (buffer) {
           onChunk(buffer)
@@ -149,12 +175,12 @@ export class GeminiProvider extends BaseAIProvider {
         buffer = ''
       }
     }
-    
+
     // 发送剩余内容
     if (buffer) {
       onChunk(buffer)
     }
-    
+
     // 确保思考标签闭合
     if (isInThought) {
       onChunk('</think>')

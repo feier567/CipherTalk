@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
     downloadAndInstall: () => ipcRenderer.invoke('app:downloadAndInstall'),
     getStartupDbConnected: () => ipcRenderer.invoke('app:getStartupDbConnected'),
+    setAppIcon: (iconName: string) => ipcRenderer.invoke('app:setAppIcon', iconName),
     onDownloadProgress: (callback: (progress: number) => void) => {
       ipcRenderer.on('app:downloadProgress', (_, progress) => callback(progress))
       return () => ipcRenderer.removeAllListeners('app:downloadProgress')
@@ -80,6 +81,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('splash:fadeOut', () => callback())
       return () => ipcRenderer.removeAllListeners('splash:fadeOut')
     }
+  },
+
+  // Windows Hello 原生验证 (比 WebAuthn 更快)
+  windowsHello: {
+    isAvailable: () => ipcRenderer.invoke('windowsHello:isAvailable') as Promise<boolean>,
+    verify: (message?: string) => ipcRenderer.invoke('windowsHello:verify', message) as Promise<{
+      success: boolean
+      result: number  // WindowsHelloResult 枚举值
+      error?: string
+    }>
   },
 
   // 密钥获取

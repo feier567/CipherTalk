@@ -24,6 +24,7 @@ interface ConfigSchema {
   // 界面相关
   theme: string
   themeMode: string
+  appIcon: string
   language: string
 
   // 协议相关
@@ -42,6 +43,10 @@ interface ConfigSchema {
   // 数据管理相关
   skipIntegrityCheck: boolean
   autoUpdateDatabase: boolean  // 是否自动更新数据库
+  // 自动同步高级参数
+  autoUpdateCheckInterval: number     // 检查间隔（秒）
+  autoUpdateMinInterval: number       // 最小更新间隔（毫秒）
+  autoUpdateDebounceTime: number      // 防抖时间（毫秒）
 
   // AI 相关
   aiCurrentProvider: string  // 当前选中的提供商
@@ -55,6 +60,7 @@ interface ConfigSchema {
   aiSummaryDetail: 'simple' | 'normal' | 'detailed'
   aiEnableCache: boolean
   aiEnableThinking: boolean  // 是否显示思考过程
+  aiMessageLimit: number     // 摘要提取的消息条数限制
 }
 
 const defaults: ConfigSchema = {
@@ -67,8 +73,9 @@ const defaults: ConfigSchema = {
   lastOpenedDb: '',
   lastSession: '',
   exportPath: '',
-  theme: 'cloud-dancer',
+  theme: 'new-year',
   themeMode: 'light',
+  appIcon: 'xinnian',
   language: 'zh-CN',
   sttLanguages: ['zh'],
   sttModelType: 'int8',
@@ -77,13 +84,17 @@ const defaults: ConfigSchema = {
   logLevel: 'WARN', // 默认只记录警告和错误
   skipIntegrityCheck: false, // 默认进行完整性检查
   autoUpdateDatabase: true,  // 默认开启自动更新
+  autoUpdateCheckInterval: 60,     // 默认 60 秒检查一次
+  autoUpdateMinInterval: 1000,     // 默认最小更新间隔 1 秒
+  autoUpdateDebounceTime: 500,     // 默认防抖时间 0.5 秒
   // AI 默认配置
   aiCurrentProvider: 'zhipu',
   aiProviderConfigs: {},  // 空对象，用户配置后填充
   aiDefaultTimeRange: 7, // 默认7天
   aiSummaryDetail: 'normal',
   aiEnableCache: true,
-  aiEnableThinking: true  // 默认显示思考过程
+  aiEnableThinking: true,  // 默认显示思考过程
+  aiMessageLimit: 3000     // 默认3000条，用户可调至5000
 }
 
 export class ConfigService {
@@ -122,6 +133,19 @@ export class ConfigService {
           updated_at INTEGER
         )
       `)
+
+      // 检查是否为旧版本（通过检查 appIcon 是否存在）
+      // 如果此前没有 appIcon 配置，说明是新版本第一次运行，强制应用新年主题
+      try {
+        const hasAppIcon = this.db.prepare("SELECT 1 FROM config WHERE key = 'appIcon'").get()
+        if (!hasAppIcon) {
+          console.log('[Config] 检测到首次运行新版本，应用新年主题')
+          this.db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('theme', ?)").run(JSON.stringify('new-year'))
+          this.db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('appIcon', ?)").run(JSON.stringify('xinnian'))
+        }
+      } catch (e) {
+        console.error('检测版本/应用主题失败:', e)
+      }
 
       // 初始化默认值
       const insertStmt = this.db.prepare(`
@@ -302,5 +326,13 @@ export class ConfigService {
 
   getAllAIProviderConfigs(): { [providerId: string]: { apiKey: string; model: string; baseURL?: string } } {
     return this.get('aiProviderConfigs')
+  }
+
+  getAIMessageLimit(): number {
+    return this.get('aiMessageLimit')
+  }
+
+  setAIMessageLimit(limit: number): void {
+    this.set('aiMessageLimit', limit)
   }
 }

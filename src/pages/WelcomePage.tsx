@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useThemeStore } from '../stores/themeStore'
 import { useAppStore } from '../stores/appStore'
 import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
 import {
   ArrowLeft, ArrowRight, CheckCircle2, Eye, EyeOff,
-  FolderOpen, ShieldCheck, Wand2, RotateCcw, Minus, X
+  FolderOpen, ShieldCheck, Wand2, RotateCcw, Minus, X, Fingerprint, Lock
 } from 'lucide-react'
+import { useAuthStore } from '../stores/authStore'
 import './WelcomePage.scss'
 
 const steps = [
@@ -15,6 +17,7 @@ const steps = [
   { id: 'cache', title: '缓存目录', desc: '设置本地缓存存储位置' },
   { id: 'key', title: '解密密钥', desc: '获取密钥与自动识别账号' },
   { id: 'image', title: '图片密钥', desc: '获取 XOR 与 AES 密钥' },
+  { id: 'security', title: '安全防护', desc: '配置应用锁保护隐私' },
   { id: 'decrypt', title: '解密数据库', desc: '测试连接并完成配置' }
 ]
 
@@ -25,6 +28,8 @@ interface WelcomePageProps {
 function WelcomePage({ standalone = false }: WelcomePageProps) {
   const navigate = useNavigate()
   const { isDbConnected, setDbConnected } = useAppStore()
+  const appIcon = useThemeStore(state => state.appIcon)
+  const { enableAuth, disableAuth, isAuthEnabled } = useAuthStore()
 
   const [stepIndex, setStepIndex] = useState(0)
   const [dbPath, setDbPath] = useState('')
@@ -42,6 +47,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
   const [showDecryptKey, setShowDecryptKey] = useState(false)
   const [dbKeyStatus, setDbKeyStatus] = useState('')
   const [imageKeyStatus, setImageKeyStatus] = useState('')
+  const [authStatus, setAuthStatus] = useState('')
+  const [isEnablingAuth, setIsEnablingAuth] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const [showWechatPathPrompt, setShowWechatPathPrompt] = useState(false)
   const [customWechatPath, setCustomWechatPath] = useState('')
@@ -66,12 +73,12 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
     const removeImageProgress = window.electronAPI.imageKey?.onProgress?.((msg) => {
       setImageKeyStatus(msg)
     })
-    
+
     // 请求通知权限
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission()
     }
-    
+
     // 从缓存加载配置
     const loadCachedConfig = () => {
       try {
@@ -103,7 +110,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       }
     }
     loadCachedConfig()
-    
+
     // 自动检测最佳缓存路径（如果缓存中没有）
     const initCachePath = async () => {
       if (!cachePath) {
@@ -118,7 +125,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       }
     }
     initCachePath()
-    
+
     return () => {
       removeStatus?.()
       removeImageProgress?.()
@@ -323,12 +330,12 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           setImageAesKey(result.aesKey)
         }
         setImageKeyStatus('已获取图片密钥')
-        
+
         // 发送系统通知
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification('CipherTalk - 图片密钥获取成功', {
             body: '已成功获取图片密钥，可以继续下一步操作',
-            icon: './logo.png'
+            icon: appIcon === 'xinnian' ? './xinnian.png' : './logo.png'
           })
         }
       } else {
@@ -346,7 +353,9 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
     if (currentStep.id === 'db') return Boolean(dbPath)
     if (currentStep.id === 'cache') return Boolean(cachePath)
     if (currentStep.id === 'key') return decryptKey.length === 64 && Boolean(wxid)
+    if (currentStep.id === 'key') return decryptKey.length === 64 && Boolean(wxid)
     if (currentStep.id === 'image') return true
+    if (currentStep.id === 'security') return true
     if (currentStep.id === 'decrypt') return false // 最后一步，不能下一步
     return false
   }
@@ -393,7 +402,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       }
 
       setDecryptStatus('正在测试数据库连接...')
-      
+
       const result = await window.electronAPI.wcdb.testConnection(dbPath, decryptKey, wxid)
       if (!result.success) {
         setError(result.error || 'WCDB 连接失败')
@@ -403,7 +412,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       }
 
       setDecryptStatus('连接成功，开始解密数据库...')
-      
+
       // 监听解密进度
       const removeProgressListener = window.electronAPI.dataManagement.onProgress((data) => {
         if (data.type === 'decrypt') {
@@ -418,20 +427,20 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           setError(data.error || '解密过程出错')
         }
       })
-      
+
       // 执行解密
       const decryptResult = await window.electronAPI.wcdb.decryptDatabase(dbPath, decryptKey, wxid)
-      
+
       // 移除进度监听
       removeProgressListener()
-      
+
       if (!decryptResult.success) {
         setError(decryptResult.error || '数据库解密失败')
         setDecryptStatus('')
         setIsDecrypting(false)
         return
       }
-      
+
       const totalFiles = (decryptResult.successCount || 0) + (decryptResult.failCount || 0)
       setDecryptStatus(`解密完成，共解密 ${decryptResult.successCount} 个数据库文件${decryptResult.failCount ? `，失败 ${decryptResult.failCount} 个` : ''}`)
       await new Promise(resolve => setTimeout(resolve, 1000))
@@ -443,7 +452,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       for (let i = 3; i > 0; i--) {
         setCountdown(i)
         setDecryptStatus(`配置保存成功，${i} 秒后进入应用...`)
-        
+
         // 在倒计时第一秒时清除缓存
         if (i === 3) {
           try {
@@ -452,7 +461,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
             console.error('清除缓存配置失败:', e)
           }
         }
-        
+
         await new Promise(resolve => setTimeout(resolve, 1000))
       }
 
@@ -529,7 +538,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           </button>
         </div>
       )}
-      
+
       {/* Hook 安装成功气泡提示 */}
       {showHookSuccessToast && (
         <div className="hook-success-toast">
@@ -537,7 +546,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           <span>Hook 安装成功，现在登录微信</span>
         </div>
       )}
-      
+
       {/* 全屏倒计时覆盖层 */}
       {countdown > 0 && (
         <div className="countdown-overlay">
@@ -547,7 +556,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           </div>
         </div>
       )}
-      
+
       <div className="welcome-shell">
         {/* 顶部进度条 */}
         <div className="progress-header">
@@ -569,20 +578,20 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           {/* 左侧说明 */}
           <div className="info-panel">
             <div className="panel-brand">
-              <img src="./logo.png" alt="CipherTalk" className="brand-logo" />
+              <img src={appIcon === 'xinnian' ? "./xinnian.png" : "./logo.png"} alt="CipherTalk" className="brand-logo" />
               <div>
                 <h1 className="brand-title">CipherTalk</h1>
                 <p className="brand-subtitle">初始引导</p>
               </div>
             </div>
-            
+
             <div className="info-divider"></div>
-            
+
             <div className="step-header">
               <h2>{currentStep.title}</h2>
               <p className="info-desc">{currentStep.desc}</p>
             </div>
-            
+
             {currentStep.id === 'intro' && (
               <div className="info-content">
                 <h3>准备好了吗？</h3>
@@ -603,7 +612,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 </div>
               </div>
             )}
-            
+
             {currentStep.id === 'db' && (
               <div className="info-content">
                 <h3>数据库目录说明</h3>
@@ -619,7 +628,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 </div>
               </div>
             )}
-            
+
             {currentStep.id === 'cache' && (
               <div className="info-content">
                 <h3>缓存目录说明</h3>
@@ -632,7 +641,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 </ul>
               </div>
             )}
-            
+
             {currentStep.id === 'key' && (
               <div className="info-content">
                 <h3>解密密钥说明</h3>
@@ -648,7 +657,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 </div>
               </div>
             )}
-            
+
             {currentStep.id === 'image' && (
               <div className="info-content">
                 <h3>图片密钥说明</h3>
@@ -662,7 +671,24 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 </ul>
               </div>
             )}
-            
+
+            {currentStep.id === 'security' && (
+              <div className="info-content">
+                <h3>安全防护说明</h3>
+                <p>为应用添加额外的安全保护（可选）。</p>
+                <ul className="info-list">
+                  <li>启用后每次启动需要验证</li>
+                  <li>使用 Windows Hello 进行认证</li>
+                  <li>支持面部识别、指纹或 PIN 码</li>
+                  <li>保护您的聊天记录隐私</li>
+                </ul>
+                <div className="info-warning" style={{ background: 'rgba(76, 175, 80, 0.1)', color: '#4CAF50' }}>
+                  <ShieldCheck size={16} />
+                  <span>推荐在公共电脑上开启此功能</span>
+                </div>
+              </div>
+            )}
+
             {currentStep.id === 'decrypt' && (
               <div className="info-content">
                 <h3>解密数据库说明</h3>
@@ -679,7 +705,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 </div>
               </div>
             )}
-            
+
             <div className="info-footer">
               <ShieldCheck size={14} />
               <span>数据仅在本地处理，不上传服务器</span>
@@ -687,7 +713,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           </div>
 
           {/* 右侧配置表单 */}
-            <div className="setup-card">
+          <div className="setup-card">
             <div className="setup-body">
               {currentStep.id === 'intro' && (
                 <div className="intro-message">
@@ -697,200 +723,261 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 </div>
               )}
 
-          {currentStep.id === 'db' && (
-            <div className="setup-body">
-              <label className="field-label">数据库根目录</label>
-              {hasCache && (
-                <div className="field-hint" style={{ color: '#4CAF50', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <CheckCircle2 size={14} />
-                  <span>已从缓存加载配置数据</span>
-                </div>
-              )}
-              <input
-                type="text"
-                className="field-input"
-                placeholder="例如：C:\\Users\\xxx\\Documents\\xwechat_files"
-                value={dbPath}
-                onChange={(e) => setDbPath(e.target.value)}
-              />
-              <button className="btn btn-primary btn-full" onClick={handleSelectPath}>
-                <FolderOpen size={16} /> 浏览选择目录
-              </button>
-              <div className="field-hint">请选择微信-设置-存储位置对应的目录</div>
-              <div className="field-hint" style={{ color: '#ff6b6b', marginTop: '4px' }}>⚠️ 目录路径不可包含中文，如有中文请去微信-设置-存储位置点击更改，迁移至全英文目录</div>
-            </div>
-          )}
-
-          {currentStep.id === 'cache' && (
-            <div className="setup-body">
-              <label className="field-label">缓存目录</label>
-              <input
-                type="text"
-                className="field-input"
-                placeholder="D:\CipherTalkDB"
-                value={cachePath}
-                onChange={(e) => setCachePath(e.target.value)}
-              />
-              <div className="button-row">
-                <button className="btn btn-primary" onClick={handleSelectCachePath}>
-                  <FolderOpen size={16} /> 浏览选择
-                </button>
-                <button className="btn btn-secondary" onClick={handleResetCachePath}>
-                  <RotateCcw size={16} /> 恢复默认
-                </button>
-              </div>
-              <div className="field-hint">用于头像、表情与图片缓存，已自动选择最佳磁盘</div>
-            </div>
-          )}
-
-          {currentStep.id === 'key' && (
-            <div className="setup-body">
-              <label className="field-label">微信账号 wxid</label>
-              <input
-                type="text"
-                className="field-input"
-                placeholder="获取密钥后将自动填充"
-                value={wxid}
-                onChange={(e) => setWxid(e.target.value)}
-              />
-              {wxidOptions.length > 0 && (
-                <div className="wxid-options">
-                  {wxidOptions.map((id) => (
-                    <button
-                      key={id}
-                      className={`wxid-option ${wxid === id ? 'is-selected' : ''}`}
-                      onClick={() => setWxid(id)}
-                    >
-                      <div className="wxid-option-name">{id}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <label className="field-label">解密密钥</label>
-              <div className="field-with-toggle">
-                <input
-                  type={showDecryptKey ? 'text' : 'password'}
-                  className="field-input"
-                  placeholder="64 位十六进制密钥"
-                  value={decryptKey}
-                  onChange={(e) => setDecryptKey(e.target.value.trim())}
-                />
-                <button type="button" className="toggle-btn" onClick={() => setShowDecryptKey(!showDecryptKey)}>
-                  {showDecryptKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-
-              <button className="btn btn-secondary btn-inline" onClick={() => handleAutoGetDbKey()} disabled={isFetchingDbKey}>
-                {isFetchingDbKey ? '获取中...' : '自动获取密钥'}
-              </button>
-
-              {showWechatPathPrompt && (
-                <div className="manual-prompt">
-                  <p className="prompt-text">未能自动找到微信安装位置，请手动选择 Weixin.exe</p>
+              {currentStep.id === 'db' && (
+                <div className="setup-body">
+                  <label className="field-label">数据库根目录</label>
+                  {hasCache && (
+                    <div className="field-hint" style={{ color: '#4CAF50', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <CheckCircle2 size={14} />
+                      <span>已从缓存加载配置数据</span>
+                    </div>
+                  )}
                   <input
                     type="text"
                     className="field-input"
-                    placeholder="例如：C:\Program Files\Tencent\WeChat\Weixin.exe"
-                    value={customWechatPath}
-                    onChange={(e) => setCustomWechatPath(e.target.value)}
-                    style={{ marginBottom: '8px' }}
+                    placeholder="例如：C:\\Users\\xxx\\Documents\\xwechat_files"
+                    value={dbPath}
+                    onChange={(e) => setDbPath(e.target.value)}
+                  />
+                  <button className="btn btn-primary btn-full" onClick={handleSelectPath}>
+                    <FolderOpen size={16} /> 浏览选择目录
+                  </button>
+                  <div className="field-hint">请选择微信-设置-存储位置对应的目录</div>
+                  <div className="field-hint" style={{ color: '#ff6b6b', marginTop: '4px' }}>⚠️ 目录路径不可包含中文，如有中文请去微信-设置-存储位置点击更改，迁移至全英文目录</div>
+                </div>
+              )}
+
+              {currentStep.id === 'cache' && (
+                <div className="setup-body">
+                  <label className="field-label">缓存目录</label>
+                  <input
+                    type="text"
+                    className="field-input"
+                    placeholder="D:\CipherTalkDB"
+                    value={cachePath}
+                    onChange={(e) => setCachePath(e.target.value)}
                   />
                   <div className="button-row">
-                    <button className="btn btn-secondary" onClick={handleSelectWechatPath}>
+                    <button className="btn btn-primary" onClick={handleSelectCachePath}>
                       <FolderOpen size={16} /> 浏览选择
                     </button>
-                    <button className="btn btn-primary" onClick={handleConfirmWechatPath}>
-                      确认并继续
+                    <button className="btn btn-secondary" onClick={handleResetCachePath}>
+                      <RotateCcw size={16} /> 恢复默认
                     </button>
                   </div>
+                  <div className="field-hint">用于头像、表情与图片缓存，已自动选择最佳磁盘</div>
                 </div>
               )}
 
-              {dbKeyStatus && <div className="field-hint status-text">{dbKeyStatus}</div>}
-              <div className="field-hint">获取密钥会自动启动微信并识别账号</div>
-              <div className="field-hint">点击自动获取后等待提示<span style={{color: 'red'}}>hook安装成功</span>，然后登录微信即可</div>
-            </div>
-          )}
+              {currentStep.id === 'key' && (
+                <div className="setup-body">
+                  <label className="field-label">微信账号 wxid</label>
+                  <input
+                    type="text"
+                    className="field-input"
+                    placeholder="获取密钥后将自动填充"
+                    value={wxid}
+                    onChange={(e) => setWxid(e.target.value)}
+                  />
+                  {wxidOptions.length > 0 && (
+                    <div className="wxid-options">
+                      {wxidOptions.map((id) => (
+                        <button
+                          key={id}
+                          className={`wxid-option ${wxid === id ? 'is-selected' : ''}`}
+                          onClick={() => setWxid(id)}
+                        >
+                          <div className="wxid-option-name">{id}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <label className="field-label">解密密钥</label>
+                  <div className="field-with-toggle">
+                    <input
+                      type={showDecryptKey ? 'text' : 'password'}
+                      className="field-input"
+                      placeholder="64 位十六进制密钥"
+                      value={decryptKey}
+                      onChange={(e) => setDecryptKey(e.target.value.trim())}
+                    />
+                    <button type="button" className="toggle-btn" onClick={() => setShowDecryptKey(!showDecryptKey)}>
+                      {showDecryptKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
 
-          {currentStep.id === 'image' && (
-            <div className="setup-body">
-              <label className="field-label">图片 XOR 密钥</label>
-              <input
-                type="text"
-                className="field-input"
-                placeholder="例如：0xA4"
-                value={imageXorKey}
-                onChange={(e) => setImageXorKey(e.target.value)}
-              />
-              <label className="field-label">图片 AES 密钥</label>
-              <input
-                type="text"
-                className="field-input"
-                placeholder="16 位密钥"
-                value={imageAesKey}
-                onChange={(e) => setImageAesKey(e.target.value)}
-              />
-              <button className="btn btn-secondary btn-inline" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey}>
-                {isFetchingImageKey ? '获取中...' : '自动获取图片密钥'}
-              </button>
-              {imageKeyStatus && <div className="field-hint status-text">{imageKeyStatus}</div>}
-              <div className="field-hint">请在电脑微信中打开查看几个图片后再点击获取秘钥，如获取失败请重复以上操作</div>
-              {isFetchingImageKey && <div className="field-hint status-text">正在扫描内存，请稍候...</div>}
-            </div>
-          )}
+                  <button className="btn btn-secondary btn-inline" onClick={() => handleAutoGetDbKey()} disabled={isFetchingDbKey}>
+                    {isFetchingDbKey ? '获取中...' : '自动获取密钥'}
+                  </button>
 
-          {currentStep.id === 'decrypt' && (
-            <div className="setup-body">
-              <div className="decrypt-summary">
-                <h3>配置摘要</h3>
-                <div className="summary-item">
-                  <span className="summary-label">数据库目录：</span>
-                  <span className="summary-value">{dbPath || '未设置'}</span>
+                  {showWechatPathPrompt && (
+                    <div className="manual-prompt">
+                      <p className="prompt-text">未能自动找到微信安装位置，请手动选择 Weixin.exe</p>
+                      <input
+                        type="text"
+                        className="field-input"
+                        placeholder="例如：C:\Program Files\Tencent\WeChat\Weixin.exe"
+                        value={customWechatPath}
+                        onChange={(e) => setCustomWechatPath(e.target.value)}
+                        style={{ marginBottom: '8px' }}
+                      />
+                      <div className="button-row">
+                        <button className="btn btn-secondary" onClick={handleSelectWechatPath}>
+                          <FolderOpen size={16} /> 浏览选择
+                        </button>
+                        <button className="btn btn-primary" onClick={handleConfirmWechatPath}>
+                          确认并继续
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {dbKeyStatus && <div className="field-hint status-text">{dbKeyStatus}</div>}
+                  <div className="field-hint">获取密钥会自动启动微信并识别账号</div>
+                  <div className="field-hint">点击自动获取后等待提示<span style={{ color: 'red' }}>hook安装成功</span>，然后登录微信即可</div>
                 </div>
-                <div className="summary-item">
-                  <span className="summary-label">缓存目录：</span>
-                  <span className="summary-value">{cachePath || '未设置'}</span>
+              )}
+
+              {currentStep.id === 'image' && (
+                <div className="setup-body">
+                  <label className="field-label">图片 XOR 密钥</label>
+                  <input
+                    type="text"
+                    className="field-input"
+                    placeholder="例如：0xA4"
+                    value={imageXorKey}
+                    onChange={(e) => setImageXorKey(e.target.value)}
+                  />
+                  <label className="field-label">图片 AES 密钥</label>
+                  <input
+                    type="text"
+                    className="field-input"
+                    placeholder="16 位密钥"
+                    value={imageAesKey}
+                    onChange={(e) => setImageAesKey(e.target.value)}
+                  />
+                  <button className="btn btn-secondary btn-inline" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey}>
+                    {isFetchingImageKey ? '获取中...' : '自动获取图片密钥'}
+                  </button>
+                  {imageKeyStatus && <div className="field-hint status-text">{imageKeyStatus}</div>}
+                  <div className="field-hint">请在电脑微信中打开查看几个图片后再点击获取秘钥，如获取失败请重复以上操作</div>
+                  {isFetchingImageKey && <div className="field-hint status-text">正在扫描内存，请稍候...</div>}
                 </div>
-                <div className="summary-item">
-                  <span className="summary-label">微信账号：</span>
-                  <span className="summary-value">{wxid || '未设置'}</span>
-                </div>
-                <div className="summary-item">
-                  <span className="summary-label">解密密钥：</span>
-                  <span className="summary-value">{decryptKey ? '已设置 (64位)' : '未设置'}</span>
-                </div>
-                <div className="summary-item">
-                  <span className="summary-label">图片密钥：</span>
-                  <span className="summary-value">
-                    {imageXorKey || imageAesKey ? '已设置' : '未设置（可选）'}
-                  </span>
-                </div>
-              </div>
-              
-              <button 
-                className="btn btn-primary btn-full" 
-                onClick={handleStartDecrypt} 
-                disabled={isDecrypting}
-                style={{ marginTop: '16px' }}
-              >
-                {isDecrypting ? '解密中...' : '开始解密'}
-              </button>
-              
-              {decryptStatus && countdown === 0 && (
-                <div className="decrypt-status-container" style={{ marginTop: '16px' }}>
-                  <div className="field-hint status-text" style={{ textAlign: 'center' }}>
-                    {decryptStatus}
+              )}
+
+              {currentStep.id === 'security' && (
+                <div className="setup-body">
+                  <div className="auth-setup-card">
+                    <div className="auth-icon-large">
+                      <Fingerprint size={48} />
+                    </div>
+                    <h3>Windows Hello 认证</h3>
+                    <p className="auth-desc">
+                      启用 Windows Hello 以保护您的数据。
+                      <br />
+                      启用后，每次打开应用都需要进行生物识别或 PIN 码验证。
+                    </p>
+
+                    <div className="auth-actions">
+                      {!isAuthEnabled ? (
+                        <button
+                          className="btn btn-primary"
+                          onClick={async () => {
+                            setIsEnablingAuth(true)
+                            setAuthStatus('正在等待 Windows Hello 验证...')
+                            const result = await enableAuth()
+                            setIsEnablingAuth(false)
+                            if (result.success) {
+                              setAuthStatus('已成功启用认证保护')
+                            } else {
+                              setError(result.error || '启用失败')
+                              setAuthStatus('')
+                            }
+                          }}
+                          disabled={isEnablingAuth}
+                        >
+                          {isEnablingAuth ? '正在配置...' : '启用应用锁'}
+                        </button>
+                      ) : (
+                        <div className="auth-success-state">
+                          <div className="success-badge">
+                            <CheckCircle2 size={16} />
+                            <span>已启用保护</span>
+                          </div>
+                          <button
+                            className="btn btn-text-danger"
+                            onClick={async () => {
+                              await disableAuth()
+                              setAuthStatus('')
+                            }}
+                          >
+                            关闭保护
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {authStatus && (
+                      <div className="auth-status-text">
+                        {authStatus}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
-              
-              {!isDecrypting && !decryptStatus && (
-                <div className="field-hint" style={{ marginTop: '12px', textAlign: 'center' }}>
-                  点击"开始解密"按钮，系统将验证配置并连接数据库
+
+              {currentStep.id === 'decrypt' && (
+                <div className="setup-body">
+                  <div className="decrypt-summary">
+                    <h3>配置摘要</h3>
+                    <div className="summary-item">
+                      <span className="summary-label">数据库目录：</span>
+                      <span className="summary-value">{dbPath || '未设置'}</span>
+                    </div>
+                    <div className="summary-item">
+                      <span className="summary-label">缓存目录：</span>
+                      <span className="summary-value">{cachePath || '未设置'}</span>
+                    </div>
+                    <div className="summary-item">
+                      <span className="summary-label">微信账号：</span>
+                      <span className="summary-value">{wxid || '未设置'}</span>
+                    </div>
+                    <div className="summary-item">
+                      <span className="summary-label">解密密钥：</span>
+                      <span className="summary-value">{decryptKey ? '已设置 (64位)' : '未设置'}</span>
+                    </div>
+                    <div className="summary-item">
+                      <span className="summary-label">图片密钥：</span>
+                      <span className="summary-value">
+                        {imageXorKey || imageAesKey ? '已设置' : '未设置（可选）'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn btn-primary btn-full"
+                    onClick={handleStartDecrypt}
+                    disabled={isDecrypting}
+                    style={{ marginTop: '16px' }}
+                  >
+                    {isDecrypting ? '解密中...' : '开始解密'}
+                  </button>
+
+                  {decryptStatus && countdown === 0 && (
+                    <div className="decrypt-status-container" style={{ marginTop: '16px' }}>
+                      <div className="field-hint status-text" style={{ textAlign: 'center' }}>
+                        {decryptStatus}
+                      </div>
+                    </div>
+                  )}
+
+                  {!isDecrypting && !decryptStatus && (
+                    <div className="field-hint" style={{ marginTop: '12px', textAlign: 'center' }}>
+                      点击"开始解密"按钮，系统将验证配置并连接数据库
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-          )}
             </div>
 
             {error && <div className="error-message">{error}</div>}

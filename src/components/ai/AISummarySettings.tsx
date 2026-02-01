@@ -105,6 +105,8 @@ interface AISummarySettingsProps {
   setSummaryDetail: (val: 'simple' | 'normal' | 'detailed') => void
   enableThinking: boolean
   setEnableThinking: (val: boolean) => void
+  messageLimit: number
+  setMessageLimit: (val: number) => void
   showMessage: (text: string, success: boolean) => void
 }
 
@@ -121,6 +123,8 @@ function AISummarySettings({
   setSummaryDetail,
   enableThinking,
   setEnableThinking,
+  messageLimit,
+  setMessageLimit,
   showMessage
 }: AISummarySettingsProps) {
   const [showApiKey, setShowApiKey] = useState(false)
@@ -205,11 +209,11 @@ function AISummarySettings({
 
     // 切换到新提供商
     setProvider(newProvider)
-    
+
     // 加载新提供商的配置
     const newProviderData = providers.find(p => p.id === newProvider)
     const savedConfig = providerConfigs[newProvider]
-    
+
     if (savedConfig) {
       // 使用已保存的配置
       setApiKey(savedConfig.apiKey)
@@ -263,7 +267,7 @@ function AISummarySettings({
       } else {
         // 使用后端返回的详细错误信息
         showMessage(result.error || '连接失败，请开启代理或检查网络', false)
-        
+
         // 如果需要代理，额外提示
         if (result.needsProxy) {
           console.warn('[AI] 连接失败，可能需要代理。请检查：')
@@ -367,11 +371,11 @@ function AISummarySettings({
             <input
               type={showApiKey ? 'text' : 'password'}
               placeholder={
-                provider === 'ollama' 
-                  ? '本地服务无需密钥（可选）' 
+                provider === 'ollama'
+                  ? '本地服务无需密钥（可选）'
                   : provider === 'custom'
-                  ? '请输入自定义服务的 API 密钥'
-                  : `请输入 ${currentProvider?.displayName} API 密钥`
+                    ? '请输入自定义服务的 API 密钥'
+                    : `请输入 ${currentProvider?.displayName} API 密钥`
               }
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
@@ -493,6 +497,28 @@ function AISummarySettings({
             <p>控制 AI 的推理深度（部分模型无法完全关闭推理功能，仍会显示思考过程）</p>
           </div>
         </div>
+
+        {/* 消息条数限制 */}
+        <div className="form-group">
+          <label className="label-with-value">
+            <span>摘要提取上限 (条)</span>
+            <span className="value-display">{messageLimit} 条</span>
+          </label>
+          <div className="slider-container">
+            <input
+              type="range"
+              min="1000"
+              max="5000"
+              step="100"
+              value={messageLimit}
+              onChange={(e) => setMessageLimit(Number(e.target.value))}
+              className="range-input"
+            />
+          </div>
+          <div className="form-hint">
+            设置 AI 分析时获取的最大消息数量（1000-5000）。数量越多，分析越全面，但可能增加 Token 消耗。
+          </div>
+        </div>
       </div>
 
       {/* 3. 摘要偏好 */}
@@ -563,7 +589,7 @@ function AISummarySettings({
                 <X size={20} />
               </button>
             </div>
-            <div 
+            <div
               className="ollama-help-body markdown-content"
               dangerouslySetInnerHTML={{ __html: ollamaGuideContent || '<p>加载中...</p>' }}
             />
@@ -581,7 +607,7 @@ function AISummarySettings({
                 <X size={20} />
               </button>
             </div>
-            <div 
+            <div
               className="ollama-help-body markdown-content"
               dangerouslySetInnerHTML={{ __html: customGuideContent || '<p>加载中...</p>' }}
             />

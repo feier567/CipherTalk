@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import './SplashPage.scss'
 
+import { useThemeStore } from '../stores/themeStore'
+
 function SplashPage() {
   const [fadeOut, setFadeOut] = useState(false)
+  const appIcon = useThemeStore(state => state.appIcon)
 
   useEffect(() => {
     // 等待入场动画完成后再通知主进程（入场动画 0.4s + 额外停留 0.6s = 1s）
@@ -33,7 +36,7 @@ function SplashPage() {
         <div className="splash-logo">
           {/* 尝试加载logo图片，如果不存在则显示文字 */}
           <img
-            src="./logo.png"
+            src={appIcon === 'xinnian' ? "./xinnian.png" : "./logo.png"}
             alt="密语"
             onError={(e) => {
               // 如果图片加载失败，隐藏img，显示文字

@@ -1236,12 +1236,16 @@ class DataManagementService {
   /**
    * 启用自动更新（文件监听 + 定时检查）
    */
-  enableAutoUpdate(intervalSeconds: number = 30): void {
+  enableAutoUpdate(intervalSeconds?: number): void {
     // 检查配置是否允许自动更新
     if (!this.configService.get('autoUpdateDatabase')) {
       console.log('[DataManagement] 自动更新配置为关闭，跳过启动')
       return
     }
+
+    // 获取配置的间隔
+    const configuredInterval = (this.configService.get('autoUpdateCheckInterval') as number) || 60
+    const finalInterval = intervalSeconds || configuredInterval
 
     if (this.autoUpdateEnabled) {
       this.disableAutoUpdate()
@@ -1267,7 +1271,7 @@ class DataManagementService {
         // 通知监听器
         this.updateListeners.forEach(listener => listener(true))
       }
-    }, intervalSeconds * 1000)
+    }, finalInterval * 1000)
   }
 
   /**
@@ -1359,7 +1363,9 @@ class DataManagementService {
         // 只监听 .db 文件
         if (!filename.toLowerCase().endsWith('.db')) return
 
-        // 防抖：500ms 内的多次变化只触发一次
+        // 防抖：配置的毫秒数内的多次变化只触发一次
+        const debounceTime = (this.configService.get('autoUpdateDebounceTime') as number) || 500
+
         if (debounceTimer) {
           clearTimeout(debounceTimer)
         }
@@ -1367,13 +1373,13 @@ class DataManagementService {
         debounceTimer = setTimeout(async () => {
           // console.log(`[DataManagement] 检测到数据库文件变化: ${filename}`)
 
-          // 检查更新频率限制（最多每5秒更新一次）
+          // 检查更新频率限制
           const now = Date.now()
           const timeSinceLastUpdate = now - this.lastUpdateTime
-          const MIN_UPDATE_INTERVAL = 1000 // 最小更新间隔：1秒 (配合 DLL 极速解密)
+          const MIN_UPDATE_INTERVAL = (this.configService.get('autoUpdateMinInterval') as number) || 1000
 
           if (timeSinceLastUpdate < MIN_UPDATE_INTERVAL) {
-            // 如果距离上次更新不足5秒，延迟到满足间隔
+            // 如果距离上次更新不足最小间隔，延迟到满足间隔
             const delay = MIN_UPDATE_INTERVAL - timeSinceLastUpdate
             // console.log(`[DataManagement] 更新过于频繁，延迟 ${delay}ms 后执行`)
             setTimeout(() => {
@@ -1389,13 +1395,12 @@ class DataManagementService {
           }
 
           // 等待文件写入完成（微信写入数据库可能需要一些时间）
-          // 等待文件写入完成（微信写入数据库可能需要一些时间）
           // 延迟1秒，确保文件完全写入完成
           await new Promise(resolve => setTimeout(resolve, 1000))
 
           // 触发更新
           this.triggerUpdate()
-        }, 300) // 延迟从 500ms 减少到 300ms
+        }, debounceTime)
       })
     } catch (e) {
       console.error('[DataManagement] 启动文件监听失败:', e)
@@ -1411,6 +1416,9 @@ class DataManagementService {
       return
     }
 
+    // 获取最小更新间隔配置
+    const MIN_UPDATE_INTERVAL = (this.configService.get('autoUpdateMinInterval') as number) || 1000
+
     // 如果正在更新，增加待处理计数
     if (this.isUpdating) {
       this.pendingUpdateCount++
@@ -1421,7 +1429,6 @@ class DataManagementService {
     // 检查更新频率限制
     const now = Date.now()
     const timeSinceLastUpdate = now - this.lastUpdateTime
-    const MIN_UPDATE_INTERVAL = 1000 // 最小更新间隔：1秒
 
     if (timeSinceLastUpdate < MIN_UPDATE_INTERVAL) {
       // 延迟到满足间隔
@@ -1465,7 +1472,7 @@ class DataManagementService {
     // 检查更新频率限制
     const now = Date.now()
     const timeSinceLastUpdate = now - this.lastUpdateTime
-    const MIN_UPDATE_INTERVAL = 1000 // 最小更新间隔减少到 1 秒
+    const MIN_UPDATE_INTERVAL = (this.configService.get('autoUpdateMinInterval') as number) || 1000
 
     if (timeSinceLastUpdate < MIN_UPDATE_INTERVAL) {
       const remainingTime = MIN_UPDATE_INTERVAL - timeSinceLastUpdate

@@ -10,15 +10,17 @@ import {
   Eye, EyeOff, Key, FolderSearch, FolderOpen, Search,
   RotateCcw, Trash2, Save, Plug, X, Check, Sun, Moon,
   Palette, Database, ImageIcon, Download, HardDrive, Info, RefreshCw, Shield, Clock, CheckCircle, AlertCircle, FileText, Mic,
-  Zap, Layers, User, Sparkles, Github
+  Zap, Layers, User, Sparkles, Github, Fingerprint, Lock, ShieldCheck, Minus, Plus
 } from 'lucide-react'
+import { useAuthStore } from '../stores/authStore'
 import './SettingsPage.scss'
 
-type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'data' | 'activation' | 'about'
+type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'data' | 'security' | 'activation' | 'about'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'database', label: '数据解密', icon: Database },
+  { id: 'security', label: '安全设置', icon: Lock },
   { id: 'stt', label: '语音转文字', icon: Mic },
   { id: 'ai', label: 'AI 摘要', icon: Sparkles },
   { id: 'data', label: '数据管理', icon: HardDrive },
@@ -42,8 +44,22 @@ const sttModelTypeOptions = [
 function SettingsPage() {
   const [searchParams] = useSearchParams()
   const { setDbConnected, setLoading } = useAppStore()
-  const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
+  const { currentTheme, themeMode, setTheme, setThemeMode, appIcon, setAppIcon } = useThemeStore()
   const { status: activationStatus, checkStatus: checkActivationStatus } = useActivationStore()
+
+  const { isAuthEnabled, enableAuth, disableAuth, setupPassword, authMethod } = useAuthStore()
+  const [passwordInput, setPasswordInput] = useState('')
+  const [showPasswordInput, setShowPasswordInput] = useState(false)
+
+  // 安全设置确认弹窗状态
+  const [securityConfirm, setSecurityConfirm] = useState<{
+    show: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({ show: false, title: '', message: '', onConfirm: () => { } })
+
+
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const tab = searchParams.get('tab')
@@ -105,6 +121,10 @@ function SettingsPage() {
   const [exportDefaultDateRange, setExportDefaultDateRange] = useState<number>(0)
   const [exportDefaultAvatars, setExportDefaultAvatars] = useState<boolean>(true)
   const [autoUpdateDatabase, setAutoUpdateDatabase] = useState(true)
+  // 自动同步高级参数
+  const [autoUpdateCheckInterval, setAutoUpdateCheckInterval] = useState(60) // 检查间隔（秒）
+  const [autoUpdateMinInterval, setAutoUpdateMinInterval] = useState(1000)   // 最小更新间隔（毫秒）
+  const [autoUpdateDebounceTime, setAutoUpdateDebounceTime] = useState(500)  // 防抖时间（毫秒）
 
   // AI 相关配置状态
   const [aiProvider, setAiProviderState] = useState('zhipu')
@@ -113,6 +133,7 @@ function SettingsPage() {
   const [aiDefaultTimeRange, setAiDefaultTimeRangeState] = useState<number>(7)
   const [aiSummaryDetail, setAiSummaryDetailState] = useState<'simple' | 'normal' | 'detailed'>('normal')
   const [aiEnableThinking, setAiEnableThinkingState] = useState<boolean>(true)
+  const [aiMessageLimit, setAiMessageLimitState] = useState<number>(3000)
 
   // 日志相关状态
   const [logFiles, setLogFiles] = useState<Array<{ name: string; size: number; mtime: Date }>>([])
@@ -161,6 +182,14 @@ function SettingsPage() {
       setSkipIntegrityCheck(savedSkipIntegrityCheck)
       setAutoUpdateDatabase(savedAutoUpdateDatabase)
 
+      // 加载自动同步高级参数
+      const savedCheckInterval = await configService.getAutoUpdateCheckInterval()
+      const savedMinInterval = await configService.getAutoUpdateMinInterval()
+      const savedDebounceTime = await configService.getAutoUpdateDebounceTime()
+      setAutoUpdateCheckInterval(savedCheckInterval)
+      setAutoUpdateMinInterval(savedMinInterval)
+      setAutoUpdateDebounceTime(savedDebounceTime)
+
       const savedQuoteStyle = await configService.getQuoteStyle()
       setQuoteStyle(savedQuoteStyle)
 
@@ -177,6 +206,7 @@ function SettingsPage() {
       const savedAiDefaultTimeRange = await configService.getAiDefaultTimeRange()
       const savedAiSummaryDetail = await configService.getAiSummaryDetail()
       const savedAiEnableThinking = await configService.getAiEnableThinking()
+      const savedAiMessageLimit = await configService.getAiMessageLimit()
 
       setAiProviderState(savedAiProvider)
       setAiApiKeyState(savedAiApiKey)
@@ -184,6 +214,7 @@ function SettingsPage() {
       setAiDefaultTimeRangeState(savedAiDefaultTimeRange)
       setAiSummaryDetailState(savedAiSummaryDetail)
       setAiEnableThinkingState(savedAiEnableThinking)
+      setAiMessageLimitState(savedAiMessageLimit)
     } catch (e) {
       console.error('加载配置失败:', e)
     }
@@ -653,6 +684,10 @@ function SettingsPage() {
       await configService.setSkipIntegrityCheck(skipIntegrityCheck)
       // 保存自动更新设置
       await configService.setAutoUpdateDatabase(autoUpdateDatabase)
+      // 保存自动同步高级参数
+      await configService.setAutoUpdateCheckInterval(autoUpdateCheckInterval)
+      await configService.setAutoUpdateMinInterval(autoUpdateMinInterval)
+      await configService.setAutoUpdateDebounceTime(autoUpdateDebounceTime)
 
       // 保存引用样式
       await configService.setQuoteStyle(quoteStyle)
@@ -668,6 +703,7 @@ function SettingsPage() {
       await configService.setAiDefaultTimeRange(aiDefaultTimeRange)
       await configService.setAiSummaryDetail(aiSummaryDetail)
       await configService.setAiEnableThinking(aiEnableThinking)
+      await configService.setAiMessageLimit(aiMessageLimit)
 
       // 如果数据库配置完整，尝试设置已连接状态（不进行耗时测试，仅标记）
       if (decryptKey && dbPath && wxid && decryptKey.length === 64) {
@@ -706,6 +742,41 @@ function SettingsPage() {
             {currentTheme === theme.id && <div className="theme-check"><Check size={14} /></div>}
           </div>
         ))}
+      </div>
+
+      <h3 className="section-title" style={{ marginTop: '2rem' }}>应用图标</h3>
+      <div className="quote-style-options">
+        <label className={`radio-label ${appIcon === 'default' ? 'active' : ''}`} style={{ width: 'auto', minWidth: '180px' }}>
+          <input
+            type="radio"
+            name="appIcon"
+            value="default"
+            checked={appIcon === 'default' || !appIcon}
+            onChange={() => setAppIcon('default')}
+          />
+          <div className="radio-content">
+            <span className="radio-title">默认图标</span>
+            <div className="style-preview" style={{ justifyContent: 'center', padding: '10px' }}>
+              <img src="./logo.png" alt="默认" style={{ width: '48px', height: '48px' }} />
+            </div>
+          </div>
+        </label>
+
+        <label className={`radio-label ${appIcon === 'xinnian' ? 'active' : ''}`} style={{ width: 'auto', minWidth: '180px' }}>
+          <input
+            type="radio"
+            name="appIcon"
+            value="xinnian"
+            checked={appIcon === 'xinnian'}
+            onChange={() => setAppIcon('xinnian')}
+          />
+          <div className="radio-content">
+            <span className="radio-title">新年图标</span>
+            <div className="style-preview" style={{ justifyContent: 'center', padding: '10px' }}>
+              <img src="./xinnian.png" alt="新年" style={{ width: '48px', height: '48px' }} />
+            </div>
+          </div>
+        </label>
       </div>
 
       <h3 className="section-title" style={{ marginTop: '2rem' }}>引用消息样式</h3>
@@ -794,6 +865,139 @@ function SettingsPage() {
           </div>
         </div>
       </div>
+
+      {/* 自动同步高级参数 - 仅在开启自动同步时显示 */}
+      {autoUpdateDatabase && (
+        <div className="form-group advanced-sync-settings">
+          <label>自动同步高级参数</label>
+          <span className="form-hint">调整以下参数可以减少同步时的界面抖动（需要保存配置后重启应用生效）</span>
+
+          <div className="advanced-params-grid">
+            <div className="param-item">
+              <label>检查间隔</label>
+              <div className="number-control">
+                <button
+                  className="control-btn minus"
+                  onClick={() => setAutoUpdateCheckInterval(Math.max(10, autoUpdateCheckInterval - 10))}
+                  disabled={autoUpdateCheckInterval <= 10}
+                >
+                  <Minus size={14} />
+                </button>
+                <div className="value-display">
+                  <input
+                    type="text"
+                    value={autoUpdateCheckInterval}
+                    readOnly
+                  />
+                  <span className="unit">秒</span>
+                </div>
+                <button
+                  className="control-btn plus"
+                  onClick={() => setAutoUpdateCheckInterval(Math.min(600, autoUpdateCheckInterval + 10))}
+                  disabled={autoUpdateCheckInterval >= 600}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+              <span className="param-hint">定时检查数据库更新的间隔（10-600秒）</span>
+            </div>
+
+            <div className="param-item">
+              <label>最小更新间隔</label>
+              <div className="number-control">
+                <button
+                  className="control-btn minus"
+                  onClick={() => setAutoUpdateMinInterval(Math.max(500, autoUpdateMinInterval - 100))}
+                  disabled={autoUpdateMinInterval <= 500}
+                >
+                  <Minus size={14} />
+                </button>
+                <div className="value-display">
+                  <input
+                    type="text"
+                    value={autoUpdateMinInterval}
+                    readOnly
+                  />
+                  <span className="unit">毫秒</span>
+                </div>
+                <button
+                  className="control-btn plus"
+                  onClick={() => setAutoUpdateMinInterval(Math.min(10000, autoUpdateMinInterval + 100))}
+                  disabled={autoUpdateMinInterval >= 10000}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+              <span className="param-hint">两次更新之间的最小间隔（500-10000毫秒）</span>
+            </div>
+
+            <div className="param-item">
+              <label>防抖时间</label>
+              <div className="number-control">
+                <button
+                  className="control-btn minus"
+                  onClick={() => setAutoUpdateDebounceTime(Math.max(100, autoUpdateDebounceTime - 100))}
+                  disabled={autoUpdateDebounceTime <= 100}
+                >
+                  <Minus size={14} />
+                </button>
+                <div className="value-display">
+                  <input
+                    type="text"
+                    value={autoUpdateDebounceTime}
+                    readOnly
+                  />
+                  <span className="unit">毫秒</span>
+                </div>
+                <button
+                  className="control-btn plus"
+                  onClick={() => setAutoUpdateDebounceTime(Math.min(5000, autoUpdateDebounceTime + 100))}
+                  disabled={autoUpdateDebounceTime >= 5000}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+              <span className="param-hint">文件变化后等待稳定的时间（100-5000毫秒）</span>
+            </div>
+          </div>
+
+          <div className="preset-buttons">
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setAutoUpdateCheckInterval(30)
+                setAutoUpdateMinInterval(500)
+                setAutoUpdateDebounceTime(200)
+              }}
+            >
+              快速响应
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setAutoUpdateCheckInterval(60)
+                setAutoUpdateMinInterval(1000)
+                setAutoUpdateDebounceTime(500)
+              }}
+            >
+              平衡（推荐）
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setAutoUpdateCheckInterval(120)
+                setAutoUpdateMinInterval(3000)
+                setAutoUpdateDebounceTime(1000)
+              }}
+            >
+              稳定优先
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="form-group">
         <label>解密密钥</label>
@@ -1238,6 +1442,197 @@ function SettingsPage() {
     </div >
   )
 
+
+
+  const handleSecurityMethodSelect = async (method: 'biometric' | 'password') => {
+    // 1. 如果点击的是当前已激活的方法 -> 关闭
+    if (isAuthEnabled && authMethod === method) {
+      await disableAuth()
+      showMessage('已关闭应用锁', true)
+      if (method === 'password') {
+        setShowPasswordInput(false)
+        setPasswordInput('')
+      }
+      return
+    }
+
+    // 2. 如果点击的是另一个方法 -> 确认切换
+    if (isAuthEnabled && authMethod !== method) {
+      setSecurityConfirm({
+        show: true,
+        title: '切换认证方式',
+        message: method === 'biometric'
+          ? '切换到 Windows Hello 将清除当前的密码设置，是否继续？'
+          : '切换到密码认证将清除当前的生物识别设置，是否继续？',
+        onConfirm: async () => {
+          await disableAuth()
+          if (method === 'biometric') {
+            activateBiometric()
+          } else {
+            setShowPasswordInput(true)
+          }
+          setSecurityConfirm(prev => ({ ...prev, show: false }))
+        }
+      })
+      return
+    }
+
+    // 3. 如果当前未激活任何方法 -> 直接开启
+    if (method === 'biometric') {
+      activateBiometric()
+    } else {
+      setShowPasswordInput(true)
+    }
+  }
+
+  const activateBiometric = async () => {
+    showMessage('正在等待 Windows Hello 验证...', true)
+    const result = await enableAuth()
+    if (result.success) {
+      showMessage('已启用 Windows Hello', true)
+      setShowPasswordInput(false)
+    } else {
+      showMessage(result.error || '启用失败', false)
+    }
+  }
+
+  const renderSecurityTab = () => (
+    <div className="tab-content">
+      <h3 className="section-title">安全保护</h3>
+      <div className="section-desc">配置应用启动时的安全验证方式，保护您的隐私数据。</div>
+
+      <div className="security-grid">
+        {/* Windows Hello Card */}
+        <div
+          className={`security-card ${isAuthEnabled && authMethod === 'biometric' ? 'active' : ''}`}
+          onClick={() => handleSecurityMethodSelect('biometric')}
+          style={{ cursor: 'pointer' }}
+        >
+          <div className="security-preview-area">
+            <div className="preview-lock-screen">
+              <div className="preview-avatar">
+                <Lock size={20} />
+              </div>
+              <div className="preview-badge">
+                <Fingerprint /> Windows Hello
+              </div>
+              <div className="preview-btn" />
+            </div>
+          </div>
+          <div className="security-content">
+            <div className="security-header">
+              <span className="security-title">Windows Hello</span>
+              {isAuthEnabled && authMethod === 'biometric' && (
+                <div className="theme-check" style={{ position: 'relative', top: 0, right: 0, transform: 'scale(1)', background: 'var(--primary)', boxShadow: 'none' }}>
+                  <Check size={12} />
+                </div>
+              )}
+            </div>
+            <div className="security-desc">
+              使用系统的面部识别、指纹或 PIN 码进行验证。体验最流畅，安全性高。
+            </div>
+          </div>
+        </div>
+
+        {/* Custom Password Card */}
+        <div
+          className={`security-card ${isAuthEnabled && authMethod === 'password' ? 'active' : ''}`}
+          onClick={() => handleSecurityMethodSelect('password')}
+          style={{ cursor: 'pointer' }}
+        >
+          <div className="security-preview-area">
+            <div className="preview-lock-screen">
+              <div className="preview-avatar">
+                <ShieldCheck size={20} />
+              </div>
+              <div className="preview-input" />
+              <div className="preview-btn" style={{ width: '32px' }} />
+            </div>
+          </div>
+          <div className="security-content">
+            <div className="security-header">
+              <span className="security-title">自定义应用密码</span>
+              {isAuthEnabled && authMethod === 'password' && (
+                <div className="theme-check" style={{ position: 'relative', top: 0, right: 0, transform: 'scale(1)', background: 'var(--primary)', boxShadow: 'none' }}>
+                  <Check size={12} />
+                </div>
+              )}
+            </div>
+            <div className="security-desc">
+              设置应用专属密码。如果不方便使用生物识别，或者需要在多台设备间同步配置时推荐。
+            </div>
+
+            {/* Input area - prevent click propagation to avoid toggling card off while typing */}
+            {(showPasswordInput || (isAuthEnabled && authMethod === 'password')) && (
+              <div
+                className="password-setup-inline"
+                onClick={(e) => e.stopPropagation()}
+                style={{ cursor: 'default' }}
+              >
+                <label className="field-label">
+                  {authMethod === 'password' ? '修改密码 (留空不修改)' : '设置新密码'}
+                </label>
+                <div className="password-input-row">
+                  <input
+                    type="password"
+                    className="field-input"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    placeholder="******"
+                  />
+                  <button
+                    className="btn btn-primary"
+                    disabled={!passwordInput}
+                    onClick={async () => {
+                      if (!passwordInput) return
+                      const result = await setupPassword(passwordInput)
+                      if (result.success) {
+                        showMessage(authMethod === 'password' ? '密码已更新' : '已启用密码锁', true)
+                        setPasswordInput('')
+                        setShowPasswordInput(false)
+                      } else {
+                        showMessage(result.error || '设置失败', false)
+                      }
+                    }}
+                  >
+                    <Save size={14} /> 保存
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Confirmation Modal */}
+      {securityConfirm.show && (
+        <div className="clear-dialog-overlay">
+          <div className="clear-dialog">
+            <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertCircle className="text-warning" size={20} color="#f59e0b" />
+              {securityConfirm.title}
+            </h3>
+            <p>{securityConfirm.message}</p>
+            <div className="dialog-actions">
+              <button
+                className="btn btn-secondary"
+                onClick={() => setSecurityConfirm(prev => ({ ...prev, show: false }))}
+              >
+                取消
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={securityConfirm.onConfirm}
+              >
+                确定切换
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
   const renderDataManagementTab = () => (
     <div className="tab-content">
       {/* 导出设置 */}
@@ -1523,7 +1918,7 @@ function SettingsPage() {
     <div className="tab-content about-tab">
       <div className="about-card">
         <div className="about-logo">
-          <img src="./logo.png" alt="密语" />
+          <img src={appIcon === 'xinnian' ? "./xinnian.png" : "./logo.png"} alt="密语" />
         </div>
         <h2 className="about-name">密语</h2>
         <p className="about-slogan">CipherTalk</p>
@@ -1643,6 +2038,7 @@ function SettingsPage() {
       <div className="settings-body">
         {activeTab === 'appearance' && renderAppearanceTab()}
         {activeTab === 'database' && renderDatabaseTab()}
+        {activeTab === 'security' && renderSecurityTab()}
         {activeTab === 'stt' && renderSttTab()}
         {activeTab === 'ai' && (
           <AISummarySettings
@@ -1658,6 +2054,8 @@ function SettingsPage() {
             setSummaryDetail={setAiSummaryDetailState}
             enableThinking={aiEnableThinking}
             setEnableThinking={setAiEnableThinkingState}
+            messageLimit={aiMessageLimit}
+            setMessageLimit={setAiMessageLimitState}
             showMessage={showMessage}
           />
         )}
