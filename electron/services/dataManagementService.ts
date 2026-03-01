@@ -391,8 +391,9 @@ class DataManagementService {
         return { success: false, error: '请先在设置页面配置解密密钥' }
       }
 
-      // 不再关闭整个 chatService，而是在更新每个文件前只关闭那个特定的数据库
-      // 这样用户可以在增量更新时继续查看其他会话的消息
+      // 恢复上次可能中断的操作（清理 .tmp，恢复 .old 备份）
+      this.recoverFromInterruption(scanResult.databases!)
+
       imageDecryptService.clearHardlinkCache()
 
       let successCount = 0
@@ -434,61 +435,21 @@ class DataManagementService {
           continue
         }
 
-        const backupPath = file.decryptedPath + '.old.' + Date.now()
-
-        // 在备份/覆盖文件前，先关闭该数据库的连接，释放文件锁
-        chatService.closeDatabase(file.fileName)
-        // sns.db 由 snsService 单独管理，也需要关闭
-        if (file.fileName.toLowerCase() === 'sns.db') {
-          snsService.closeSnsDb()
-        }
-        // 等待文件句柄释放
-        await new Promise(resolve => setTimeout(resolve, 100))
-
-        if (fs.existsSync(file.decryptedPath!)) {
-          // 尝试备份文件，如果失败则重试几次
-          let backupSuccess = false
-          const maxRetries = 3
-          for (let retry = 0; retry < maxRetries; retry++) {
-            try {
-              // 如果是 hardlink.db，再次清理缓存
-              if (file.fileName.toLowerCase().includes('hardlink')) {
-                imageDecryptService.clearHardlinkCache()
-                await new Promise(resolve => setTimeout(resolve, 200))
-              }
-
-              fs.renameSync(file.decryptedPath!, backupPath)
-              backupSuccess = true
-              break
-            } catch (e: any) {
-              if (e.code === 'EBUSY' || e.code === 'EPERM') {
-                // 文件被占用，等待后重试
-                if (retry < maxRetries - 1) {
-                  // console.warn(`备份文件失败（重试 ${retry + 1}/${maxRetries}）: ${file.fileName}`, e.code)
-                  await new Promise(resolve => setTimeout(resolve, 500 * (retry + 1)))
-                } else {
-                  // console.error(`备份旧文件失败（已重试 ${maxRetries} 次），将尝试直接覆盖: ${file.fileName}`, e)
-                  // 即使备份失败，也不中断，尝试直接覆盖原文件
-                  // 很多时候 rename 失败是因为杀毒软件扫描或文件锁定，但写入可能仍有机会成功
-                }
-              } else {
-                // 非文件占用错误，记录并继续尝试
-                console.error(`备份文件遇到非锁定错误: ${file.fileName}`, e)
-              }
-            }
-          }
-
-          if (!backupSuccess) {
-            // 重试失败，跳过这个文件
-            console.warn(`[增量同步] 备份失败，跳过文件: ${file.fileName}`)
-            failCount++
-            continue
-          }
+        // === 安全更新：先解密到临时文件，验证通过后再原子替换 ===
+        const tmpPath = file.decryptedPath + '.tmp'
+        if (fs.existsSync(tmpPath)) {
+          try { fs.unlinkSync(tmpPath) } catch { }
         }
 
+        const outputDir = path.dirname(file.decryptedPath!)
+        if (!fs.existsSync(outputDir)) {
+          fs.mkdirSync(outputDir, { recursive: true })
+        }
+
+        // 解密到临时文件（旧数据库完全不受影响，用户可继续使用）
         const result = await wechatDecryptService.decryptDatabase(
           file.filePath,
-          file.decryptedPath!,
+          tmpPath,
           key,
           (current, total) => {
             this.sendProgress({
@@ -501,91 +462,91 @@ class DataManagementService {
           }
         )
 
-        // 验证解密后的文件是否完整（FTS 数据库跳过完整性检查）
+        // 解密失败，清理临时文件，旧数据库完全不受影响
+        if (!result.success || !fs.existsSync(tmpPath)) {
+          if (fs.existsSync(tmpPath)) { try { fs.unlinkSync(tmpPath) } catch { } }
+          failCount++
+          console.error(`[增量同步] 解密失败: ${file.fileName}`, result.error)
+          continue
+        }
+
+        // 验证临时文件完整性（FTS 数据库跳过）
         const isFtsDb = file.fileName.toLowerCase().includes('fts') || file.fileName.toLowerCase().includes('_fts')
         const skipIntegrityCheck = this.configService.get('skipIntegrityCheck') === true
-        if (result.success && fs.existsSync(file.decryptedPath!) && !isFtsDb && !skipIntegrityCheck) {
+        if (!isFtsDb && !skipIntegrityCheck) {
           try {
-            // 尝试打开解密后的数据库文件，验证完整性
-            // 使用异步方式，避免阻塞主线程
             const Database = require('better-sqlite3')
-            const testDb = new Database(file.decryptedPath!, { readonly: true })
-
-            // 让出时间片，避免阻塞UI
+            const testDb = new Database(tmpPath, { readonly: true })
             await new Promise(resolve => setImmediate(resolve))
-
             const integrityResult = testDb.prepare('PRAGMA integrity_check').get() as any
             testDb.close()
-
-            // 再次让出时间片
             await new Promise(resolve => setImmediate(resolve))
-
-            // 检查完整性结果
             if (integrityResult && typeof integrityResult === 'object' && integrityResult['integrity_check'] !== 'ok') {
               throw new Error('数据库完整性检查失败')
             }
           } catch (integrityError: any) {
-            // 只对真正的损坏错误进行处理，忽略 FTS 数据库的逻辑错误
-            if (integrityError?.code === 'SQLITE_CORRUPT' || integrityError?.message?.includes('malformed')) {
-              console.error(`解密后的数据库文件损坏: ${file.decryptedPath}`, integrityError)
-              // 关闭可能占用文件的连接
-              chatService.close()
-              await new Promise(resolve => setTimeout(resolve, 200))
-
-              // 恢复备份（先删除损坏文件，再重命名备份）
-              if (fs.existsSync(backupPath)) {
-                try {
-                  // 先尝试删除损坏的文件
-                  if (fs.existsSync(file.decryptedPath!)) {
-                    try {
-                      fs.unlinkSync(file.decryptedPath!)
-                    } catch (e) {
-                      // 如果删除失败，尝试重命名
-                      const corruptedPath = file.decryptedPath! + '.corrupted.' + Date.now()
-                      try {
-                        fs.renameSync(file.decryptedPath!, corruptedPath)
-                      } catch { }
-                    }
-                  }
-                  // 然后恢复备份
-                  fs.renameSync(backupPath, file.decryptedPath!)
-                  console.log(`已恢复备份文件: ${file.fileName}`)
-                } catch (e: any) {
-                  console.error(`恢复备份失败: ${file.fileName}`, e)
-                  // 如果恢复失败，记录错误但继续处理其他文件
-                }
-              }
+            if (integrityError?.code === 'SQLITE_CORRUPT' || integrityError?.message?.includes('malformed') || integrityError?.message?.includes('完整性检查失败')) {
+              console.error(`[增量同步] 临时文件损坏，丢弃: ${file.fileName}`, integrityError)
+              try { fs.unlinkSync(tmpPath) } catch { }
               failCount++
               continue
-            } else {
-              // 其他错误（如 SQL logic error）可能是 FTS 数据库的正常情况，记录但不失败
-              console.warn(`数据库验证警告（可能正常）: ${file.fileName}`, integrityError?.code || integrityError?.message)
             }
+            console.warn(`[增量同步] 数据库验证警告（可能正常）: ${file.fileName}`, integrityError?.code || integrityError?.message)
           }
         }
 
-        if (result.success) {
-          successCount++
+        // 临时文件验证通过，开始原子替换（尽量晚关数据库，减少不可用时间）
+        chatService.closeDatabase(file.fileName)
+        if (file.fileName.toLowerCase() === 'sns.db') {
+          snsService.closeSnsDb()
+        }
+        if (file.fileName.toLowerCase().includes('hardlink')) {
+          imageDecryptService.clearHardlinkCache()
+        }
+        await new Promise(resolve => setTimeout(resolve, 100))
 
-          // sns.db 特殊处理：合并旧数据，防止"三天可见"等设置导致朋友圈数据丢失
-          if (file.fileName.toLowerCase() === 'sns.db' && fs.existsSync(backupPath) && fs.existsSync(file.decryptedPath!)) {
-            try {
-              await this.mergeSnsTimeline(file.decryptedPath!, backupPath)
-            } catch (e) {
-              console.warn('[增量同步] sns.db 数据合并失败，不影响更新:', e)
-            }
-          }
+        const backupPath = file.decryptedPath + '.old.' + Date.now()
 
-          if (fs.existsSync(backupPath)) {
-            try { fs.unlinkSync(backupPath) } catch { }
+        // 备份旧文件
+        if (fs.existsSync(file.decryptedPath!)) {
+          try {
+            fs.renameSync(file.decryptedPath!, backupPath)
+          } catch (e) {
+            console.error(`[增量同步] 备份旧文件失败: ${file.fileName}`, e)
+            try { fs.unlinkSync(tmpPath) } catch { }
+            failCount++
+            continue
           }
-        } else {
-          failCount++
-          const time = new Date().toLocaleTimeString()
-          console.error(`[${time}] [增量同步] 同步失败: ${file.fileName}`, result.error)
+        }
+
+        // 原子替换：临时文件 -> 正式文件
+        try {
+          fs.renameSync(tmpPath, file.decryptedPath!)
+        } catch (e) {
+          console.error(`[增量同步] 替换失败，恢复备份: ${file.fileName}`, e)
           if (fs.existsSync(backupPath)) {
             try { fs.renameSync(backupPath, file.decryptedPath!) } catch { }
           }
+          failCount++
+          continue
+        }
+
+        successCount++
+
+        // sns.db 特殊处理：合并旧数据，防止"三天可见"等设置导致朋友圈数据丢失
+        if (file.fileName.toLowerCase() === 'sns.db' && fs.existsSync(backupPath)) {
+          try {
+            await this.mergeSnsTimeline(file.decryptedPath!, backupPath)
+          } catch (e) {
+            console.warn('[增量同步] sns.db 数据合并失败，不影响更新:', e)
+          }
+        }
+
+        // 清理备份
+        if (fs.existsSync(backupPath)) {
+          try { fs.unlinkSync(backupPath) } catch { }
+          try { fs.unlinkSync(backupPath + '-shm') } catch { }
+          try { fs.unlinkSync(backupPath + '-wal') } catch { }
         }
 
         // 关键：强制让出主线程时间片，防止批量处理时 UI 卡死
@@ -656,8 +617,49 @@ class DataManagementService {
       // 如果表结构不匹配等问题，记录但不中断
       console.warn('[增量同步] sns.db 合并异常:', e?.message || e)
     } finally {
-      try { oldDb?.close() } catch {}
-      try { newDb?.close() } catch {}
+      try { oldDb?.close() } catch { }
+      try { newDb?.close() } catch { }
+    }
+  }
+
+  /**
+   * 中断恢复：清理上次未完成的操作残留
+   * - .tmp 文件：解密未完成，直接删除
+   * - .old.* 备份：如果正式文件不存在或损坏，恢复备份
+   */
+  private recoverFromInterruption(databases: DatabaseFileInfo[]): void {
+    for (const db of databases) {
+      if (!db.decryptedPath) continue
+      const dir = path.dirname(db.decryptedPath)
+      if (!fs.existsSync(dir)) continue
+
+      const baseName = path.basename(db.decryptedPath)
+      const tmpPath = db.decryptedPath + '.tmp'
+
+      // 清理未完成的临时文件
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath) } catch { }
+      }
+
+      // 检查是否有残留备份需要恢复
+      try {
+        const files = fs.readdirSync(dir)
+        for (const f of files) {
+          if (!f.startsWith(baseName + '.old.')) continue
+          const backupPath = path.join(dir, f)
+          if (!fs.existsSync(db.decryptedPath)) {
+            // 正式文件不存在，恢复备份
+            try {
+              fs.renameSync(backupPath, db.decryptedPath)
+              console.log(`[恢复] 已从备份恢复: ${db.fileName}`)
+            } catch { }
+          } else {
+            // 正式文件存在，删除多余备份
+            try { fs.unlinkSync(backupPath) } catch { }
+          }
+          break // 只处理第一个匹配的备份
+        }
+      } catch { }
     }
   }
 
@@ -829,7 +831,7 @@ class DataManagementService {
       }
 
       const images: ImageFileInfo[] = []
-      
+
       // 支持的图片格式
       const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
 
@@ -1086,7 +1088,7 @@ class DataManagementService {
     try {
       const dbPath = this.configService.get('dbPath')
       const wxid = this.configService.get('myWxid')
-      
+
       if (!dbPath || !wxid) {
         return { success: false, error: '请先在设置页面配置数据库路径和账号' }
       }
