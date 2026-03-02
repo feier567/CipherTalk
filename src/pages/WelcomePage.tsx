@@ -39,6 +39,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
   const [cachePath, setCachePath] = useState('')
   const [wxid, setWxid] = useState('')
   const [wxidOptions, setWxidOptions] = useState<string[]>([])
+  const [isAccountVerified, setIsAccountVerified] = useState(false)
+  const [isVerifyingAccount, setIsVerifyingAccount] = useState(false)
   const [error, setError] = useState('')
 
   const [isScanningWxid, setIsScanningWxid] = useState(false)
@@ -134,9 +136,37 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
 
   useEffect(() => {
     setWxidOptions([])
+    setIsAccountVerified(false)
     // 注意：不要清空 wxid，因为它可能是从缓存加载的
     // setWxid('')
   }, [dbPath])
+
+  const verifyAccountDirectory = async (candidateWxid: string, key: string, silent = false) => {
+    if (!dbPath || !candidateWxid || key.length !== 64) {
+      setIsAccountVerified(false)
+      return false
+    }
+
+    setIsVerifyingAccount(true)
+    try {
+      const result = await window.electronAPI.wcdb.testConnection(dbPath, key, candidateWxid)
+      if (result.success) {
+        setIsAccountVerified(true)
+        if (!silent) setDbKeyStatus(`账号目录验证成功：${candidateWxid}`)
+        return true
+      }
+
+      setIsAccountVerified(false)
+      if (!silent) setError(result.error || '账号目录验证失败，请重新选择')
+      return false
+    } catch (e) {
+      setIsAccountVerified(false)
+      if (!silent) setError(`账号目录验证失败: ${e}`)
+      return false
+    } finally {
+      setIsVerifyingAccount(false)
+    }
+  }
 
   // 保存配置到缓存
   useEffect(() => {
@@ -223,8 +253,9 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
     try {
       const wxids = await window.electronAPI.dbPath.scanWxids(dbPath)
       setWxidOptions(wxids)
+      setIsAccountVerified(false)
       if (wxids.length > 0) {
-        // 优先选择以 wxid_ 开头的账号
+        // 密钥前仅做候选识别，默认优先 wxid_ 前缀目录
         const wxidAccount = wxids.find(id => id.startsWith('wxid_'))
         const selectedWxid = wxidAccount || wxids[0]
         setWxid(selectedWxid)
@@ -250,16 +281,37 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       const result = await window.electronAPI.wxKey.startGetKey(wechatPath)
       if (result.success && result.key) {
         setDecryptKey(result.key)
-        setDbKeyStatus('密钥获取成功，正在识别账号...')
+        setDbKeyStatus('密钥获取成功，正在验证账号目录...')
         setError('')
         setShowWechatPathPrompt(false)
+
+        // 先尝试当前登录账号检测（强信号）
+        let accountInfo: { wxid: string; dbPath: string } | null = null
+        if (dbPath) {
+          accountInfo = await window.electronAPI.wxKey.detectCurrentAccount(dbPath, 10)
+          if (!accountInfo) {
+            accountInfo = await window.electronAPI.wxKey.detectCurrentAccount(dbPath, 60)
+          }
+        }
+
+        if (accountInfo) {
+          setWxid(accountInfo.wxid)
+          const ok = await verifyAccountDirectory(accountInfo.wxid, result.key, true)
+          if (ok) {
+            setDbKeyStatus(`密钥获取成功，已验证账号目录: ${accountInfo.wxid}`)
+            return
+          }
+        }
+
         const wxids = await handleScanWxid(true)
         if (wxids.length > 1) {
-          setDbKeyStatus(`密钥获取成功，识别到 ${wxids.length} 个账号，请选择`)
+          // 多账号时仅作为候选，等待用户选择后再验证
+          setDbKeyStatus(`密钥获取成功，识别到 ${wxids.length} 个候选账号目录，请选择后验证`)
         } else if (wxids.length === 1) {
-          setDbKeyStatus('密钥获取成功，已自动识别账号')
+          const ok = await verifyAccountDirectory(wxids[0], result.key, true)
+          setDbKeyStatus(ok ? '密钥获取成功，已自动识别并验证账号目录' : '密钥获取成功，请手动确认账号目录')
         } else {
-          setDbKeyStatus('密钥获取成功')
+          setDbKeyStatus('密钥获取成功，请手动选择并验证账号目录')
         }
       } else {
         if (result.needManualPath) {
@@ -352,8 +404,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
     if (currentStep.id === 'intro') return true
     if (currentStep.id === 'db') return Boolean(dbPath)
     if (currentStep.id === 'cache') return Boolean(cachePath)
-    if (currentStep.id === 'key') return decryptKey.length === 64 && Boolean(wxid)
-    if (currentStep.id === 'key') return decryptKey.length === 64 && Boolean(wxid)
+    if (currentStep.id === 'key') return decryptKey.length === 64 && Boolean(wxid) && isAccountVerified
     if (currentStep.id === 'image') return true
     if (currentStep.id === 'security') return true
     if (currentStep.id === 'decrypt') return false // 最后一步，不能下一步
@@ -366,7 +417,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       if (currentStep.id === 'cache' && !cachePath) setError('请填写缓存目录')
       if (currentStep.id === 'key') {
         if (decryptKey.length !== 64) setError('密钥长度必须为 64 个字符')
-        else if (!wxid) setError('未能自动识别 wxid，请尝试重新获取或检查目录')
+        else if (!wxid) setError('请先选择账号目录')
+        else if (!isAccountVerified) setError('账号目录尚未验证，请先验证后继续')
       }
       return
     }
@@ -381,7 +433,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
 
   const handleStartDecrypt = async () => {
     if (!dbPath) { setError('请先选择数据库目录'); return }
-    if (!wxid) { setError('请填写微信ID'); return }
+    if (!wxid) { setError('请先选择账号目录'); return }
+    if (!isAccountVerified) { setError('账号目录尚未验证，请先验证'); return }
     if (!decryptKey || decryptKey.length !== 64) { setError('请填写 64 位解密密钥'); return }
 
     setIsDecrypting(true)
@@ -770,13 +823,16 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
 
               {currentStep.id === 'key' && (
                 <div className="setup-body">
-                  <label className="field-label">微信账号 wxid</label>
+                  <label className="field-label">账号目录（待验证）</label>
                   <input
                     type="text"
                     className="field-input"
                     placeholder="获取密钥后将自动填充"
                     value={wxid}
-                    onChange={(e) => setWxid(e.target.value)}
+                    onChange={(e) => {
+                      setWxid(e.target.value)
+                      setIsAccountVerified(false)
+                    }}
                   />
                   {wxidOptions.length > 0 && (
                     <div className="wxid-options">
@@ -784,13 +840,31 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                         <button
                           key={id}
                           className={`wxid-option ${wxid === id ? 'is-selected' : ''}`}
-                          onClick={() => setWxid(id)}
+                          onClick={async () => {
+                            setWxid(id)
+                            setIsAccountVerified(false)
+                            if (decryptKey.length === 64) {
+                              await verifyAccountDirectory(id, decryptKey)
+                            }
+                          }}
                         >
                           <div className="wxid-option-name">{id}</div>
                         </button>
                       ))}
                     </div>
                   )}
+                  <div className="button-row">
+                    <button
+                      className="btn btn-secondary btn-inline"
+                      onClick={() => verifyAccountDirectory(wxid, decryptKey)}
+                      disabled={isVerifyingAccount || !wxid || decryptKey.length !== 64}
+                    >
+                      {isVerifyingAccount ? '验证中...' : '验证账号目录'}
+                    </button>
+                  </div>
+                  <div className="field-hint">
+                    状态：{isAccountVerified ? '✅ 已验证' : '⚠️ 未验证（密钥前只能识别候选目录）'}
+                  </div>
                   <label className="field-label">解密密钥</label>
                   <div className="field-with-toggle">
                     <input
@@ -832,7 +906,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                   )}
 
                   {dbKeyStatus && <div className="field-hint status-text">{dbKeyStatus}</div>}
-                  <div className="field-hint">获取密钥会自动启动微信并识别账号</div>
+                  <div className="field-hint">获取密钥会自动启动微信并识别候选账号目录</div>
                   <div className="field-hint">点击自动获取后等待提示<span style={{ color: 'red' }}>hook安装成功</span>，然后登录微信即可</div>
                 </div>
               )}
@@ -938,8 +1012,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                       <span className="summary-value">{cachePath || '未设置'}</span>
                     </div>
                     <div className="summary-item">
-                      <span className="summary-label">微信账号：</span>
-                      <span className="summary-value">{wxid || '未设置'}</span>
+                      <span className="summary-label">账号目录：</span>
+                      <span className="summary-value">{wxid ? `${wxid}${isAccountVerified ? '（已验证）' : '（未验证）'}` : '未设置'}</span>
                     </div>
                     <div className="summary-item">
                       <span className="summary-label">解密密钥：</span>

@@ -841,21 +841,43 @@ class ChatService extends EventEmitter {
   }
 
   /**
+   * 从消息表名中提取会话 hash（兼容大小写与后缀）
+   */
+  private extractTableHash(tableName: string): string | null {
+    const match = tableName.match(/msg_([0-9a-f]{32})/i)
+    if (match?.[1]) return match[1].toLowerCase()
+    return null
+  }
+
+  /**
    * 在消息数据库中查找会话的消息表（带缓存）
    */
   private findMessageTable(db: Database.Database, sessionId: string): string | null {
     try {
       const tables = db.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND lower(name) LIKE 'msg_%'"
       ).all() as any[]
 
-      const hash = this.getTableNameHash(sessionId)
+      const hash = this.getTableNameHash(sessionId).toLowerCase()
 
       for (const table of tables) {
         const name = table.name as string
-        if (name.includes(hash)) {
+
+        // 优先精确提取 hash 匹配
+        const tableHash = this.extractTableHash(name)
+        if (tableHash && tableHash === hash) {
           return name
         }
+
+        // 兜底兼容：历史表名规则可能不完全一致，采用大小写无关包含匹配
+        if (name.toLowerCase().includes(hash)) {
+          return name
+        }
+      }
+
+      if (tables.length > 0) {
+        const sample = tables.slice(0, 8).map(t => t.name).join(', ')
+        console.warn(`[ChatService] 未匹配到消息表: session=${sessionId}, hash=${hash}, tables=${tables.length}, sample=[${sample}]`)
       }
     } catch { }
 
@@ -3386,9 +3408,9 @@ class ChatService extends EventEmitter {
           if (!db) continue
 
           // 查找所有消息表
-          const tables = db.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'"
-          ).all() as any[]
+      const tables = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND lower(name) LIKE 'msg_%'"
+      ).all() as any[]
 
           for (const table of tables) {
             const tableName = table.name as string

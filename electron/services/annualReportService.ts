@@ -79,6 +79,27 @@ export interface AnnualReportData {
 class AnnualReportService {
   private configService: ConfigService
   private messageDbCache: Map<string, Database.Database> = new Map()
+  private readonly systemAccounts = new Set([
+    'medianote',
+    'floatbottle',
+    'qmessage',
+    'qqmail',
+    'fmessage',
+    'weixin',
+    'newsapp',
+    'notification_messages',
+    'weixinreminder',
+    'masssendapp',
+    'qqsync',
+    'facebookapp',
+    'feedsapp',
+    'voip',
+    'blogapp',
+    'gmailapp',
+    'linkedinplugin',
+    'appbrand_notify_message',
+    'appbrandcustomerservicemsg'
+  ])
 
   constructor() {
     this.configService = new ConfigService()
@@ -211,6 +232,32 @@ class AnnualReportService {
     return crypto.createHash('md5').update(username).digest('hex')
   }
 
+  private shouldExcludeAnnualSession(username: string): boolean {
+    if (!username) return true
+    const u = username.toLowerCase().trim()
+    if (!u) return true
+
+    // 群聊、公众号、文件传输助手
+    if (u.includes('@chatroom')) return true
+    if (u.startsWith('gh_')) return true
+    if (u === 'filehelper') return true
+
+    // 已知系统账号
+    if (this.systemAccounts.has(u)) return true
+
+    // 邮箱/提醒类
+    if (u.includes('qqmail') || u.includes('mail')) return true
+    if (u.includes('reminder') || u.includes('notify')) return true
+
+    return false
+  }
+
+  private extractTableHash(tableName: string): string | null {
+    const match = tableName.match(/msg_([0-9a-f]{32})/i)
+    if (match?.[1]) return match[1].toLowerCase()
+    return null
+  }
+
   private hasName2IdTable(db: Database.Database): boolean {
     try {
       const result = db.prepare(
@@ -270,7 +317,7 @@ class AnnualReportService {
 
         const tables = db.prepare(`
           SELECT name FROM sqlite_master 
-          WHERE type='table' AND name LIKE 'Msg_%'
+          WHERE type='table' AND lower(name) LIKE 'msg_%'
         `).all() as { name: string }[]
 
         for (const { name: tableName } of tables) {
@@ -345,17 +392,19 @@ class AnnualReportService {
         .map(s => s.username)
         .filter(u => {
           const uLower = u.toLowerCase()
-          return uLower !== wxidLower && uLower !== cleanedWxidLower
+          return uLower !== wxidLower && uLower !== cleanedWxidLower && !this.shouldExcludeAnnualSession(u)
         })
 
       // 构建 hash -> username 映射
       const hashToUsername = new Map<string, string>()
       for (const username of privateUsernames) {
-        hashToUsername.set(this.getTableHash(username), username)
+        hashToUsername.set(this.getTableHash(username).toLowerCase(), username)
       }
 
-      const startTime = Math.floor(new Date(year, 0, 1).getTime() / 1000)
-      const endTime = Math.floor(new Date(year, 11, 31, 23, 59, 59).getTime() / 1000)
+      const isAllTime = year <= 0
+      const reportYear = isAllTime ? 0 : year
+      const startTime = isAllTime ? 0 : Math.floor(new Date(year, 0, 1).getTime() / 1000)
+      const endTime = isAllTime ? Math.floor(Date.now() / 1000) : Math.floor(new Date(year, 11, 31, 23, 59, 59).getTime() / 1000)
 
       // 统计数据
       let totalMessages = 0
@@ -387,12 +436,13 @@ class AnnualReportService {
 
         const tables = db.prepare(`
           SELECT name FROM sqlite_master 
-          WHERE type='table' AND name LIKE 'Msg_%'
+          WHERE type='table' AND lower(name) LIKE 'msg_%'
         `).all() as { name: string }[]
 
         for (const { name: tableName } of tables) {
           // 从表名提取 hash，查找对应的 sessionId
-          const tableHash = tableName.replace('Msg_', '')
+          const tableHash = this.extractTableHash(tableName)
+          if (!tableHash) continue
           const sessionId = hashToUsername.get(tableHash)
           if (!sessionId) continue // 不是私聊表
 
@@ -803,7 +853,7 @@ class AnnualReportService {
         .map(([phrase, count]) => ({ phrase, count }))
 
       const reportData: AnnualReportData = {
-        year,
+        year: reportYear,
         totalMessages,
         totalFriends: contactStats.size,
         coreFriends,

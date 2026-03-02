@@ -361,6 +361,11 @@ function AnnualReportWindow() {
     return `${Math.round(seconds / 3600)}小时`
   }
 
+  const formatYearLabel = (value: number, withSuffix: boolean = true) => {
+    if (value === 0) return '全部时间'
+    return withSuffix ? `${value}年` : `${value}`
+  }
+
   // 获取可用的板块列表
   const getAvailableSections = (): SectionInfo[] => {
     if (!reportData) return []
@@ -623,7 +628,8 @@ function AnnualReportWindow() {
 
       const finalDataUrl = outputCanvas.toDataURL('image/png')
       const link = document.createElement('a')
-      link.download = `${reportData?.year}年度报告.png`
+      const yearFilePrefix = reportData ? formatYearLabel(reportData.year, false) : ''
+      link.download = `${yearFilePrefix}年度报告.png`
       link.href = finalDataUrl
       document.body.appendChild(link)
       link.click()
@@ -669,22 +675,24 @@ function AnnualReportWindow() {
     // 单张图片直接下载，多张打包成 zip
     if (exportedImages.length === 1) {
       const link = document.createElement('a')
-      link.download = `${reportData?.year}年度报告_${exportedImages[0].name}.png`
+      const yearFilePrefix = reportData ? formatYearLabel(reportData.year, false) : ''
+      link.download = `${yearFilePrefix}年度报告_${exportedImages[0].name}.png`
       link.href = exportedImages[0].data
       link.click()
     } else {
       setExportProgress('正在打包...')
       const zip = new JSZip()
+      const yearFilePrefix = reportData ? formatYearLabel(reportData.year, false) : ''
 
       for (const img of exportedImages) {
         // 从 data URL 提取 base64 数据
         const base64Data = img.data.split(',')[1]
-        zip.file(`${reportData?.year}年度报告_${img.name}.png`, base64Data, { base64: true })
+        zip.file(`${yearFilePrefix}年度报告_${img.name}.png`, base64Data, { base64: true })
       }
 
       const blob = await zip.generateAsync({ type: 'blob' })
       const link = document.createElement('a')
-      link.download = `${reportData?.year}年度报告_分模块.zip`
+      link.download = `${yearFilePrefix}年度报告_分模块.zip`
       link.href = URL.createObjectURL(blob)
       link.click()
       URL.revokeObjectURL(link.href)
@@ -753,6 +761,7 @@ function AnnualReportWindow() {
   }
 
   const { year, totalMessages, totalFriends, coreFriends, monthlyTopFriends, peakDay, longestStreak, activityHeatmap, midnightKing, selfAvatarUrl, mutualFriend, socialInitiative, responseSpeed, topPhrases } = reportData
+  const yearTitle = formatYearLabel(year)
   const topFriend = coreFriends[0]
   const mostActive = getMostActiveTime(activityHeatmap.data)
 
@@ -855,10 +864,10 @@ function AnnualReportWindow() {
           {/* 封面 */}
           <section className="section cover-section" ref={sectionRefs.cover}>
             <div className="label-text">CipherTalk · ANNUAL REPORT</div>
-            <div className="cover-year">{year}</div>
+            <div className="cover-year">{year === 0 ? 'ALL' : year}</div>
             <h1 className="hero-title">微信聊天报告</h1>
             <hr className="divider" />
-            <p className="hero-desc">时光匆匆，转眼又是一年<br />让我们一起回顾这一年的点点滴滴</p>
+            <p className="hero-desc">时光匆匆，回望这段时间<br />让我们一起回顾你们的点点滴滴</p>
           </section>
 
           {/* 年度概览 */}
@@ -895,7 +904,7 @@ function AnnualReportWindow() {
           {/* 月度好友 */}
           <section className="section" ref={sectionRefs.monthlyFriends}>
             <div className="label-text">月度好友</div>
-            <h2 className="hero-title">{year}年月度好友</h2>
+            <h2 className="hero-title">{yearTitle}月度好友</h2>
             <p className="hero-desc">根据12个月的聊天习惯<br />每个月陪你最多的人</p>
             <div className="monthly-orbit">
               {monthlyTopFriends.map((m, i) => (
@@ -1036,9 +1045,9 @@ function AnnualReportWindow() {
           {topPhrases && topPhrases.length > 0 && (
             <section className="section" ref={sectionRefs.topPhrases}>
               <div className="label-text">年度常用语</div>
-              <h2 className="hero-title">你在{year}年的年度常用语</h2>
+              <h2 className="hero-title">你在{yearTitle}的高频表达</h2>
               <p className="hero-desc">
-                这一年，你说得最多的是：
+                这段时间，你说得最多的是：
                 <br />
                 <span className="hl" style={{ fontSize: '20px' }}>
                   {topPhrases.slice(0, 3).map(p => p.phrase).join('、')}
@@ -1103,7 +1112,7 @@ function AnnualReportWindow() {
               我们总是在向前走，却很少有机会回头看看
               <br />愿新的一年，所有期待，皆有回声
             </p>
-            <div className="ending-year">{year}</div>
+            <div className="ending-year">{year === 0 ? 'ALL' : year}</div>
             <div className="ending-brand">密语-CipherTalk</div>
           </section>
         </div>

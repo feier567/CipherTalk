@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react'
 import { Calendar, Loader2, Sparkles } from 'lucide-react'
 import './AnnualReportPage.scss'
 
+type YearOption = number | 'all'
+
 function AnnualReportPage() {
   const [availableYears, setAvailableYears] = useState<number[]>([])
-  const [selectedYear, setSelectedYear] = useState<number | null>(null)
+  const [selectedYear, setSelectedYear] = useState<YearOption | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isGenerating, setIsGenerating] = useState(false)
 
@@ -31,7 +33,8 @@ function AnnualReportPage() {
     if (!selectedYear) return
     setIsGenerating(true)
     try {
-      await window.electronAPI.window.openAnnualReportWindow(selectedYear)
+      const yearParam = selectedYear === 'all' ? 0 : selectedYear
+      await window.electronAPI.window.openAnnualReportWindow(yearParam)
     } catch (e) {
       console.error('生成报告失败:', e)
     } finally {
@@ -58,6 +61,15 @@ function AnnualReportPage() {
     )
   }
 
+  const yearOptions: YearOption[] = availableYears.length > 0
+    ? ['all', ...availableYears]
+    : []
+
+  const getYearLabel = (value: YearOption | null) => {
+    if (!value) return ''
+    return value === 'all' ? '全部时间' : `${value}`
+  }
+
   return (
     <div className="annual-report-page">
       <Sparkles size={32} className="header-icon" />
@@ -65,14 +77,14 @@ function AnnualReportPage() {
       <p className="page-desc">选择年份，生成你的微信聊天年度回顾</p>
 
       <div className="year-grid">
-        {availableYears.map(year => (
+        {yearOptions.map(year => (
           <div
             key={year}
             className={`year-card ${selectedYear === year ? 'selected' : ''}`}
             onClick={() => setSelectedYear(year)}
           >
-            <span className="year-number">{year}</span>
-            <span className="year-label">年</span>
+            <span className="year-number">{year === 'all' ? '全部' : year}</span>
+            <span className="year-label">{year === 'all' ? '时间' : '年'}</span>
           </div>
         ))}
       </div>
@@ -90,7 +102,7 @@ function AnnualReportPage() {
         ) : (
           <>
             <Sparkles size={20} />
-            <span>生成 {selectedYear} 年度报告</span>
+            <span>生成 {getYearLabel(selectedYear)} 年度报告</span>
           </>
         )}
       </button>

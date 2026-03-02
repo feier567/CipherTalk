@@ -82,6 +82,8 @@ function SettingsPage() {
   const [wxidOptions, setWxidOptions] = useState<string[]>([])
   const [showWxidDropdown, setShowWxidDropdown] = useState(false)
   const [isScanningWxid, setIsScanningWxid] = useState(false)
+  const [isAccountVerified, setIsAccountVerified] = useState(false)
+  const [isVerifyingAccount, setIsVerifyingAccount] = useState(false)
   const [cachePath, setCachePath] = useState('')
   const [imageXorKey, setImageXorKey] = useState('')
   const [imageAesKey, setImageAesKey] = useState('')
@@ -636,21 +638,21 @@ function SettingsPage() {
     setIsScanningWxid(true)
     try {
       const wxids = await window.electronAPI.dbPath.scanWxids(dbPath)
+      setIsAccountVerified(false)
       if (wxids.length === 0) {
         showMessage('未检测到账号目录（需包含 db_storage 文件夹）', false)
         setWxidOptions([])
       } else if (wxids.length === 1) {
         // 只有一个账号，直接设置
         setWxid(wxids[0])
-        await configService.setMyWxid(wxids[0])
-        showMessage(`已检测到账号：${wxids[0]}`, true)
+        showMessage(`已检测到候选账号目录：${wxids[0]}（待验证）`, true)
         setWxidOptions([])
         setShowWxidDropdown(false)
       } else {
         // 多个账号，显示选择下拉框
         setWxidOptions(wxids)
         setShowWxidDropdown(true)
-        showMessage(`检测到 ${wxids.length} 个账号，请选择`, true)
+        showMessage(`检测到 ${wxids.length} 个候选账号目录，请选择后验证`, true)
       }
     } catch (e) {
       showMessage(`扫描失败: ${e}`, false)
@@ -662,16 +664,41 @@ function SettingsPage() {
   // 选择 wxid
   const handleSelectWxid = async (selectedWxid: string) => {
     setWxid(selectedWxid)
-    await configService.setMyWxid(selectedWxid)
+    setIsAccountVerified(false)
     setShowWxidDropdown(false)
-    showMessage(`已选择账号：${selectedWxid}`, true)
+    showMessage(`已选择候选账号目录：${selectedWxid}（待验证）`, true)
+  }
+
+  const handleVerifyAccountDirectory = async () => {
+    if (!dbPath) { showMessage('请先选择数据库目录', false); return }
+    if (!decryptKey || decryptKey.length !== 64) { showMessage('请先配置64位解密密钥', false); return }
+    if (!wxid) { showMessage('请先选择账号目录', false); return }
+
+    setIsVerifyingAccount(true)
+    try {
+      const result = await window.electronAPI.wcdb.testConnection(dbPath, decryptKey, wxid)
+      if (result.success) {
+        setIsAccountVerified(true)
+        await configService.setMyWxid(wxid)
+        showMessage(`账号目录验证成功：${wxid}`, true)
+      } else {
+        setIsAccountVerified(false)
+        showMessage(result.error || '账号目录验证失败，请更换目录重试', false)
+      }
+    } catch (e) {
+      setIsAccountVerified(false)
+      showMessage(`账号目录验证失败: ${e}`, false)
+    } finally {
+      setIsVerifyingAccount(false)
+    }
   }
 
   const handleTestConnection = async () => {
     if (!dbPath) { showMessage('请先选择数据库目录', false); return }
     if (!decryptKey) { showMessage('请先输入解密密钥', false); return }
     if (decryptKey.length !== 64) { showMessage('密钥长度必须为64个字符', false); return }
-    if (!wxid) { showMessage('请先输入或扫描 wxid', false); return }
+    if (!wxid) { showMessage('请先选择账号目录', false); return }
+    if (!isAccountVerified) { showMessage('请先验证账号目录', false); return }
 
     setIsTesting(true)
     try {
@@ -734,7 +761,7 @@ function SettingsPage() {
       await configService.setAiMessageLimit(aiMessageLimit)
 
       // 如果数据库配置完整，尝试设置已连接状态（不进行耗时测试，仅标记）
-      if (decryptKey && dbPath && wxid && decryptKey.length === 64) {
+      if (decryptKey && dbPath && wxid && decryptKey.length === 64 && isAccountVerified) {
         setDbConnected(true, dbPath)
       }
 
@@ -1056,19 +1083,26 @@ function SettingsPage() {
       </div>
 
       <div className="form-group">
-        <label>账号 wxid</label>
-        <span className="form-hint">微信账号标识（只包含 db_storage 子目录的文件夹会被识别）</span>
+        <label>账号目录（待验证）</label>
+        <span className="form-hint">先扫描候选目录，获取密钥后再进行验证</span>
         <input
           type="text"
-          placeholder="例如: wxid_xxxxxx"
+          placeholder="例如: wxid_xxxxxx 或其他账号目录名"
           value={wxid}
-          onChange={(e) => setWxid(e.target.value)}
+          onChange={(e) => {
+            setWxid(e.target.value)
+            setIsAccountVerified(false)
+          }}
         />
         <div className="btn-row">
           <button className="btn btn-secondary" onClick={handleScanWxid} disabled={isScanningWxid}>
-            <Search size={16} /> {isScanningWxid ? '扫描中...' : '扫描 wxid'}
+            <Search size={16} /> {isScanningWxid ? '扫描中...' : '扫描账号目录'}
+          </button>
+          <button className="btn btn-secondary" onClick={handleVerifyAccountDirectory} disabled={isVerifyingAccount || !wxid || decryptKey.length !== 64}>
+            <Check size={16} /> {isVerifyingAccount ? '验证中...' : '验证账号目录'}
           </button>
         </div>
+        <span className="form-hint">状态：{isAccountVerified ? '✅ 已验证' : '⚠️ 未验证'}</span>
 
         {/* 多账号选择列表 */}
         {showWxidDropdown && wxidOptions.length > 1 && (
