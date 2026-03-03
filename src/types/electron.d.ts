@@ -6,6 +6,12 @@ export interface ImageListItem {
   liveVideoPath?: string
 }
 
+export interface ImageViewerOpenOptions {
+  sessionId?: string
+  imageMd5?: string
+  imageDatName?: string
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => void
@@ -25,7 +31,12 @@ export interface ElectronAPI {
     isChatWindowOpen: () => Promise<boolean>
     closeChatWindow: () => Promise<boolean>
     setTitleBarOverlay: (options: { symbolColor: string }) => void
-    openImageViewerWindow: (imagePath: string, liveVideoPath?: string, imageList?: ImageListItem[]) => Promise<void>
+    openImageViewerWindow: (
+      imagePath: string,
+      liveVideoPath?: string,
+      imageList?: ImageListItem[],
+      options?: ImageViewerOpenOptions
+    ) => Promise<void>
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => Promise<void>
     openBrowserWindow: (url: string, title?: string) => Promise<void>
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => Promise<void>

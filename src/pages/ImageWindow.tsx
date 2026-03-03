@@ -9,6 +9,9 @@ export default function ImageWindow() {
     const [searchParams] = useSearchParams()
     const imagePath = searchParams.get('imagePath')
     const liveVideoPath = searchParams.get('liveVideoPath')
+    const sessionId = searchParams.get('sessionId') || undefined
+    const imageMd5 = searchParams.get('imageMd5') || undefined
+    const imageDatName = searchParams.get('imageDatName') || undefined
 
     // 图片列表导航状态
     const [imageList, setImageList] = useState<Array<{ imagePath: string; liveVideoPath?: string }>>([])
@@ -18,6 +21,11 @@ export default function ImageWindow() {
     const currentImagePath = activeImage?.imagePath || imagePath
     // 多图模式下只用列表中的 liveVideoPath，不回退到 URL 参数，避免非实况图也显示实况按钮
     const currentLiveVideoPath = imageList.length > 0 ? activeImage?.liveVideoPath : liveVideoPath
+    const [hdImagePath, setHdImagePath] = useState<string | null>(null)
+    const [hdLiveVideoPath, setHdLiveVideoPath] = useState<string | undefined>(undefined)
+    const upgradeTriedRef = useRef<string | null>(null)
+    const effectiveImagePath = hdImagePath || currentImagePath
+    const effectiveLiveVideoPath = hdLiveVideoPath ?? currentLiveVideoPath
 
     const [scale, setScale] = useState(1)
     const [rotation, setRotation] = useState(0)
@@ -42,6 +50,45 @@ export default function ImageWindow() {
     const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 })
     const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 })
 
+    useEffect(() => {
+        setHdImagePath(null)
+        setHdLiveVideoPath(undefined)
+        upgradeTriedRef.current = null
+    }, [currentImagePath])
+
+    // 在图片查看器中再次尝试强制升级高清图
+    useEffect(() => {
+        if (!currentImagePath) return
+        if (!sessionId) return
+        if (!imageMd5 && !imageDatName) return
+
+        const upgradeKey = `${sessionId}|${imageMd5 || ''}|${imageDatName || ''}`
+        if (upgradeTriedRef.current === upgradeKey) return
+        upgradeTriedRef.current = upgradeKey
+
+        let cancelled = false
+        window.electronAPI.image.decrypt({
+            sessionId,
+            imageMd5,
+            imageDatName,
+            force: true
+        }).then((result) => {
+            if (cancelled) return
+            if (result.success && result.localPath) {
+                setHdImagePath(result.localPath)
+                if ((result as any).liveVideoPath) {
+                    setHdLiveVideoPath((result as any).liveVideoPath)
+                }
+            }
+        }).catch(() => {
+            // ignore
+        })
+
+        return () => {
+            cancelled = true
+        }
+    }, [currentImagePath, sessionId, imageMd5, imageDatName])
+
     const handleZoomIn = () => setScale(prev => Math.min(prev + 0.25, 10))
     const handleZoomOut = () => setScale(prev => Math.max(prev - 0.25, 0.1))
     const handleRotate = () => setRotation(prev => (prev + 90) % 360)
@@ -58,7 +105,7 @@ export default function ImageWindow() {
 
     // 播放 Live Photo
     const handlePlayLiveVideo = useCallback(() => {
-        if (currentLiveVideoPath && !isPlayingLive) {
+        if (effectiveLiveVideoPath && !isPlayingLive) {
             setIsPlayingLive(true)
             // 播放视频
             if (videoRef.current) {
@@ -66,7 +113,7 @@ export default function ImageWindow() {
                 videoRef.current.play()
             }
         }
-    }, [currentLiveVideoPath, isPlayingLive])
+    }, [effectiveLiveVideoPath, isPlayingLive])
 
     // 视频真正开始播放（画面就绪）
     const handleVideoPlaying = useCallback(() => {
@@ -353,7 +400,7 @@ export default function ImageWindow() {
             if (e.key === '-') handleZoomOut()
             if (e.key === 'r' || e.key === 'R') handleRotate()
             if (e.key === '0') handleReset()
-            if (e.key === ' ' && currentLiveVideoPath) {
+            if (e.key === ' ' && effectiveLiveVideoPath) {
                 e.preventDefault()
                 handlePlayLiveVideo()
             }
@@ -362,11 +409,11 @@ export default function ImageWindow() {
         }
         window.addEventListener('keydown', handleKeyDown)
         return () => window.removeEventListener('keydown', handleKeyDown)
-    }, [handleReset, currentLiveVideoPath, isPlayingLive, handlePlayLiveVideo, goPrev, goNext])
+    }, [handleReset, effectiveLiveVideoPath, isPlayingLive, handlePlayLiveVideo, goPrev, goNext])
 
-    const hasLiveVideo = !!currentLiveVideoPath
+    const hasLiveVideo = !!effectiveLiveVideoPath
 
-    if (!currentImagePath) {
+    if (!effectiveImagePath) {
         return (
             <div className="image-window-empty">
                 <span>无效的图片路径</span>
@@ -431,7 +478,7 @@ export default function ImageWindow() {
                     }}
                 >
                     <img
-                        src={currentImagePath}
+                        src={effectiveImagePath}
                         alt="Preview"
                         className={isPannable ? 'pannable' : ''}
                         onLoad={handleImageLoad}
@@ -441,7 +488,7 @@ export default function ImageWindow() {
                     {hasLiveVideo && isPlayingLive && (
                         <video
                             ref={videoRef}
-                            src={currentLiveVideoPath || ''}
+                            src={effectiveLiveVideoPath || ''}
                             className={`live-video ${isVideoVisible ? 'visible' : ''}`}
                             autoPlay
                             // muted={false} // Default is unmuted, explicit false for clarity

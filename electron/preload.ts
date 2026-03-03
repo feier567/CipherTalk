@@ -88,7 +88,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     isChatWindowOpen: () => ipcRenderer.invoke('window:isChatWindowOpen'),
     closeChatWindow: () => ipcRenderer.invoke('window:closeChatWindow'),
     setTitleBarOverlay: (options: { symbolColor: string }) => ipcRenderer.send('window:setTitleBarOverlay', options),
-    openImageViewerWindow: (imagePath: string, liveVideoPath?: string, imageList?: Array<{ imagePath: string; liveVideoPath?: string }>) => ipcRenderer.invoke('window:openImageViewerWindow', imagePath, liveVideoPath, imageList),
+    openImageViewerWindow: (
+      imagePath: string,
+      liveVideoPath?: string,
+      imageList?: Array<{ imagePath: string; liveVideoPath?: string }>,
+      options?: { sessionId?: string; imageMd5?: string; imageDatName?: string }
+    ) => ipcRenderer.invoke('window:openImageViewerWindow', imagePath, liveVideoPath, imageList, options),
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => ipcRenderer.invoke('window:openVideoPlayerWindow', videoPath, videoWidth, videoHeight),
     openBrowserWindow: (url: string, title?: string) => ipcRenderer.invoke('window:openBrowserWindow', url, title),
     openAISummaryWindow: (sessionId: string, sessionName: string) => ipcRenderer.invoke('window:openAISummaryWindow', sessionId, sessionName),

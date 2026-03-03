@@ -197,6 +197,7 @@ export class ImageDecryptService {
         this.cacheResolvedPaths(cacheKey, payload.imageMd5, payload.imageDatName, datPath)
         const localPath = this.filePathToUrl(datPath)
         const isThumb = this.isThumbnailPath(datPath)
+        this.emitCacheResolved(payload, cacheKey, localPath)
         return { success: true, localPath, isThumb, liveVideoPath: !isThumb ? this.checkLiveVideoCache(datPath) : undefined }
       }
 
@@ -209,6 +210,7 @@ export class ImageDecryptService {
           this.cacheResolvedPaths(cacheKey, payload.imageMd5, payload.imageDatName, existing)
           const localPath = this.filePathToUrl(existing)
           const isThumb = this.isThumbnailPath(existing)
+          this.emitCacheResolved(payload, cacheKey, localPath)
           return { success: true, localPath, isThumb, liveVideoPath: !isThumb ? this.checkLiveVideoCache(existing) : undefined }
         }
       }
@@ -276,6 +278,7 @@ export class ImageDecryptService {
         this.cacheResolvedPaths(cacheKey, payload.imageMd5, payload.imageDatName, outputPath)
         if (!isThumb) {
           this.clearUpdateFlags(cacheKey, payload.imageMd5, payload.imageDatName)
+          this.deleteThumbnailByKeys(this.getCacheKeys(payload))
         }
       }
 
@@ -290,6 +293,7 @@ export class ImageDecryptService {
       }
 
       const localPath = this.filePathToUrl(outputPath)
+      this.emitCacheResolved(payload, cacheKey, localPath)
 
       return { success: true, localPath, isThumb, liveVideoPath }
     } catch (e) {
@@ -1326,6 +1330,65 @@ export class ImageDecryptService {
     this.updateFlags.delete(cacheKey)
     if (imageMd5) this.updateFlags.delete(imageMd5)
     if (imageDatName) this.updateFlags.delete(imageDatName)
+  }
+
+  private deleteThumbnailByKeys(keys: string[]): number {
+    if (keys.length === 0) return 0
+
+    const normalizedKeys = Array.from(new Set(
+      keys
+        .map(k => this.normalizeDatBase(k.toLowerCase()))
+        .filter(Boolean)
+    ))
+    if (normalizedKeys.length === 0) return 0
+
+    let deleted = 0
+    const roots = this.getAllCacheRoots()
+
+    const isMatchThumbFile = (filePath: string): boolean => {
+      const lower = filePath.toLowerCase()
+      if (!this.isThumbnailPath(lower)) return false
+      const baseName = basename(lower)
+      return normalizedKeys.some(key => baseName.startsWith(`${key}_thumb.`))
+    }
+
+    const walk = (dir: string) => {
+      let entries: any[]
+      try {
+        entries = readdirSync(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+
+      for (const entry of entries) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+        } else if (isMatchThumbFile(full)) {
+          try {
+            unlinkSync(full)
+            deleted++
+          } catch { }
+        }
+      }
+    }
+
+    for (const root of roots) {
+      if (existsSync(root)) {
+        walk(root)
+      }
+    }
+
+    for (const [key, resolvedPath] of this.resolvedCache.entries()) {
+      if (!isMatchThumbFile(resolvedPath)) continue
+      const lowerKey = key.toLowerCase()
+      const normalizedKey = this.normalizeDatBase(lowerKey)
+      if (normalizedKeys.includes(normalizedKey) || normalizedKeys.includes(lowerKey)) {
+        this.resolvedCache.delete(key)
+      }
+    }
+
+    return deleted
   }
 
   private getCachedDatDir(accountDir: string, imageDatName?: string, imageMd5?: string): string | null {

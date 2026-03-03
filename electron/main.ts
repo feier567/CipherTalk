@@ -728,7 +728,11 @@ function createPurchaseWindow() {
 /**
  * 创建独立的图片查看窗口
  */
-function createImageViewerWindow(imagePath: string, liveVideoPath?: string) {
+function createImageViewerWindow(
+  imagePath: string,
+  liveVideoPath?: string,
+  options?: { sessionId?: string; imageMd5?: string; imageDatName?: string }
+) {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
   const iconPath = isDev
     ? join(__dirname, '../public/icon.ico')
@@ -764,7 +768,10 @@ function createImageViewerWindow(imagePath: string, liveVideoPath?: string) {
   const themeParams = getThemeQueryParams()
   const imageParam = `imagePath=${encodeURIComponent(imagePath)}`
   const liveVideoParam = liveVideoPath ? `&liveVideoPath=${encodeURIComponent(liveVideoPath)}` : ''
-  const queryParams = `${themeParams}&${imageParam}${liveVideoParam}`
+  const sessionParam = options?.sessionId ? `&sessionId=${encodeURIComponent(options.sessionId)}` : ''
+  const imageMd5Param = options?.imageMd5 ? `&imageMd5=${encodeURIComponent(options.imageMd5)}` : ''
+  const imageDatNameParam = options?.imageDatName ? `&imageDatName=${encodeURIComponent(options.imageDatName)}` : ''
+  const queryParams = `${themeParams}&${imageParam}${liveVideoParam}${sessionParam}${imageMd5Param}${imageDatNameParam}`
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/image-viewer-window?${queryParams}`)
@@ -1288,8 +1295,16 @@ function registerIpcHandlers() {
   })
 
   // 打开图片查看窗口
-  ipcMain.handle('window:openImageViewerWindow', (_, imagePath: string, liveVideoPath?: string, imageList?: Array<{ imagePath: string; liveVideoPath?: string }>) => {
-    const win = createImageViewerWindow(imagePath, liveVideoPath)
+  ipcMain.handle(
+    'window:openImageViewerWindow',
+    (
+      _,
+      imagePath: string,
+      liveVideoPath?: string,
+      imageList?: Array<{ imagePath: string; liveVideoPath?: string }>,
+      options?: { sessionId?: string; imageMd5?: string; imageDatName?: string }
+    ) => {
+      const win = createImageViewerWindow(imagePath, liveVideoPath, options)
     if (imageList && imageList.length > 1) {
       const currentIndex = imageList.findIndex(item => item.imagePath === imagePath)
       win.webContents.once('did-finish-load', () => {
@@ -1301,7 +1316,8 @@ function registerIpcHandlers() {
         }
       })
     }
-  })
+    }
+  )
 
   // 打开视频播放窗口
   ipcMain.handle('window:openVideoPlayerWindow', (_, videoPath: string, videoWidth?: number, videoHeight?: number) => {

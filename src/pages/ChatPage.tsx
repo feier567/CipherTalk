@@ -2621,6 +2621,8 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
   const [imageClicked, setImageClicked] = useState(false)
   const imageUpdateCheckedRef = useRef<string | null>(null)
   const imageClickTimerRef = useRef<number | null>(null)
+  const imageRecoveringRef = useRef(false)
+  const lastRecoverTriedPathRef = useRef<string | null>(null)
   const [isVisible, setIsVisible] = useState(false)
   const imageContainerRef = useRef<HTMLDivElement>(null)
 
@@ -2784,7 +2786,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
         })
       },
       {
-        rootMargin: '200px 0px', // 提前 200px 开始加载
+        rootMargin: '1200px 0px', // 提前加载，减少滚动到位后的等待
         threshold: 0
       }
     )
@@ -3230,6 +3232,137 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
     }
   }, [isImage, message.imageMd5, message.imageDatName, isVisible, imageCacheKey, imageLocalPath, session.username, syncVersion])
 
+  // 若已显示缩略图且检测到高清图可用，循环尝试升级（防止首轮时机过早）
+  useEffect(() => {
+    if (!isImage) return
+    if (!isVisible) return
+    if (!imageLocalPath) return
+    if (!imageLocalPath.toLowerCase().includes('_thumb')) return
+    if (!imageHasUpdate) return
+    const timer = window.setInterval(() => {
+      if (!imageLoading) {
+        void requestImageDecrypt(true)
+      }
+    }, 6000)
+
+    if (!imageLoading) {
+      void requestImageDecrypt(true)
+    }
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [isImage, isVisible, imageLocalPath, imageHasUpdate, imageLoading, requestImageDecrypt])
+
+  const handleOpenImage = useCallback(async () => {
+    if (!imageLocalPath) return
+
+    let openPath = imageLocalPath
+    let openLiveVideoPath = imageLiveVideoPath
+
+    if (imageHasUpdate && !imageLoading) {
+      try {
+        const result = await window.electronAPI.image.decrypt({
+          sessionId: session.username,
+          imageMd5: message.imageMd5 || undefined,
+          imageDatName: message.imageDatName,
+          force: true
+        })
+        if (result.success && result.localPath) {
+          imageDataUrlCache.set(imageCacheKey, result.localPath)
+          setImageLocalPath(result.localPath)
+          setImageHasUpdate(Boolean((result as { isThumb?: boolean }).isThumb))
+          openPath = result.localPath
+          if ((result as any).liveVideoPath) {
+            setImageLiveVideoPath((result as any).liveVideoPath)
+            openLiveVideoPath = (result as any).liveVideoPath
+          }
+        }
+      } catch {
+        // ignore and fallback to current path
+      }
+    }
+
+    window.electronAPI.window.openImageViewerWindow(openPath, openLiveVideoPath, undefined, {
+      sessionId: session.username,
+      imageMd5: message.imageMd5 || undefined,
+      imageDatName: message.imageDatName
+    })
+  }, [
+    imageLocalPath,
+    imageLiveVideoPath,
+    imageHasUpdate,
+    imageLoading,
+    session.username,
+    message.imageMd5,
+    message.imageDatName,
+    imageCacheKey,
+  ])
+
+  const recoverBrokenImagePath = useCallback(async () => {
+    if (!isImage) return
+    if ((!message.imageMd5 && !message.imageDatName) || !session.username) return
+    if (imageRecoveringRef.current) return
+
+    const failedPath = imageLocalPath || '__empty__'
+    if (lastRecoverTriedPathRef.current === failedPath && !imageHasUpdate) {
+      return
+    }
+    lastRecoverTriedPathRef.current = failedPath
+    imageRecoveringRef.current = true
+    setImageLoading(true)
+
+    try {
+      const payload = {
+        sessionId: session.username,
+        imageMd5: message.imageMd5 || undefined,
+        imageDatName: message.imageDatName
+      }
+
+      try {
+        const cached = await window.electronAPI.image.resolveCache(payload)
+        if (cached.success && cached.localPath && cached.localPath !== imageLocalPath) {
+          imageDataUrlCache.set(imageCacheKey, cached.localPath)
+          setImageLocalPath(cached.localPath)
+          setImageHasUpdate(cached.localPath.toLowerCase().includes('_thumb'))
+          setImageError(false)
+          return
+        }
+      } catch {
+        // continue to force decrypt
+      }
+
+      try {
+        const refreshed = await window.electronAPI.image.decrypt({ ...payload, force: true })
+        if (refreshed.success && refreshed.localPath) {
+          imageDataUrlCache.set(imageCacheKey, refreshed.localPath)
+          setImageLocalPath(refreshed.localPath)
+          setImageHasUpdate(Boolean((refreshed as { isThumb?: boolean }).isThumb))
+          if ((refreshed as any).liveVideoPath) {
+            setImageLiveVideoPath((refreshed as any).liveVideoPath)
+          }
+          setImageError(false)
+          return
+        }
+      } catch {
+        // keep error state
+      }
+
+      setImageError(true)
+    } finally {
+      setImageLoading(false)
+      imageRecoveringRef.current = false
+    }
+  }, [
+    isImage,
+    message.imageMd5,
+    message.imageDatName,
+    session.username,
+    imageLocalPath,
+    imageHasUpdate,
+    imageCacheKey
+  ])
+
   // 自动检查转写缓存
   useEffect(() => {
     if (!isVoice || sttTranscript || sttLoading) return
@@ -3277,6 +3410,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
       if (matchesCacheKey) {
         imageDataUrlCache.set(imageCacheKey, payload.localPath)
         setImageLocalPath(payload.localPath)
+        setImageHasUpdate(payload.localPath.toLowerCase().includes('_thumb'))
         setImageError(false)
       }
     })
@@ -3436,14 +3570,26 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
                 src={imageLocalPath}
                 alt="图片"
                 className="image-message"
-                onClick={() => {
-                  if (imageLocalPath) {
-                    window.electronAPI.window.openImageViewerWindow(imageLocalPath, imageLiveVideoPath)
-                  }
-                }}
+                onClick={() => { void handleOpenImage() }}
                 onLoad={() => setImageError(false)}
-                onError={() => setImageError(true)}
+                onError={() => {
+                  setImageError(true)
+                  void recoverBrokenImagePath()
+                }}
               />
+              {imageHasUpdate && (
+                <button
+                  type="button"
+                  className="image-update-button"
+                  title="检测到高清图，点击更新"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void requestImageDecrypt(true)
+                  }}
+                >
+                  <RefreshCw size={14} />
+                </button>
+              )}
               {imageLiveVideoPath && (
                 <div className="media-badge live">
                   <LivePhotoIcon size={14} />
