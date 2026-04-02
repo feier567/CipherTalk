@@ -95,6 +95,10 @@ async function main() {
 
   const previousTag = getPreviousTag()
   const commitRange = getCommitRange(previousTag, currentTag || 'HEAD')
+  console.log(`[ReleaseContext] tag=${currentTag || `v${pkg.version}`}`)
+  console.log(`[ReleaseContext] previousTag=${previousTag || 'none'}`)
+  console.log(`[ReleaseContext] commitRange=${commitRange}`)
+  console.log(`[ReleaseContext] ghTokenConfigured=${Boolean(ghToken)}`)
 
   const commitLines = runGit(`git log ${commitRange} --pretty=format:"%H|%h|%an|%ae|%s"`)
     .split(/\r?\n/)
@@ -119,6 +123,9 @@ async function main() {
     const pr = await fetchPullRequest(prNumber)
     if (pr) prs.push(pr)
   }
+  console.log(`[ReleaseContext] commits=${commits.length}`)
+  console.log(`[ReleaseContext] detectedPrNumbers=${prNumbers.length}`)
+  console.log(`[ReleaseContext] fetchedPullRequests=${prs.length}`)
 
   const context = {
     version: pkg.version,

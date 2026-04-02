@@ -109,10 +109,21 @@ function isValidAiBody(body) {
   return body.includes('## CipherTalk') && body.includes('### 感谢贡献者') && body.includes('### 相关提交与 PR')
 }
 
+function logAiConfig() {
+  console.log('[ReleaseBody] AI config:')
+  console.log(`  apiUrl=${aiApiUrl}`)
+  console.log(`  model=${aiModel}`)
+  console.log(`  apiKeyConfigured=${Boolean(aiApiKey)}`)
+  console.log(`  usingDefaultApiUrl=${!process.env.AI_API_URL}`)
+  console.log(`  usingDefaultModel=${!process.env.AI_MODEL}`)
+}
+
 async function generateAiBody(context) {
   if (!aiApiKey) {
     throw new Error('AI_API_KEY 未配置')
   }
+
+  logAiConfig()
 
   const systemPrompt = [
     '你是一个发布说明撰写助手。',
@@ -133,6 +144,8 @@ async function generateAiBody(context) {
   ].join('\n')
 
   const userPrompt = `请根据以下发布上下文为 ${context.tag} 生成标准化发布说明：\n\n${JSON.stringify(context, null, 2)}`
+  const startedAt = Date.now()
+  console.log(`[ReleaseBody] AI request start for ${context.tag}`)
 
   const response = await fetch(aiApiUrl, {
     method: 'POST',
@@ -150,20 +163,30 @@ async function generateAiBody(context) {
     })
   })
 
+  const durationMs = Date.now() - startedAt
+  console.log(`[ReleaseBody] AI response received status=${response.status} durationMs=${durationMs}`)
+
   if (!response.ok) {
-    throw new Error(`GLM 请求失败: ${response.status}`)
+    const raw = await response.text()
+    console.error(`[ReleaseBody] AI response error body=${raw}`)
+    throw new Error(`AI 请求失败: ${response.status}`)
   }
 
   const data = await response.json()
   const content = data?.choices?.[0]?.message?.content
+  console.log(`[ReleaseBody] AI content length=${typeof content === 'string' ? content.length : 0}`)
   if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('GLM 返回内容为空')
+    throw new Error('AI 返回内容为空')
   }
 
   const body = content.trim()
   if (!isValidAiBody(body)) {
-    throw new Error('GLM 返回内容不符合格式要求')
+    console.error('[ReleaseBody] AI output preview:')
+    console.error(body.slice(0, 1000))
+    throw new Error('AI 返回内容不符合格式要求')
   }
+
+  console.log('[ReleaseBody] AI output validated successfully')
 
   return body
 }
@@ -182,10 +205,12 @@ async function main() {
   } catch (error) {
     console.warn('⚠️ AI 生成失败，回退到模板正文：', String(error))
     body = buildFallbackBody(context)
+    console.log(`[ReleaseBody] Fallback body length=${body.length}`)
   }
 
   fs.writeFileSync(outputPath, `${body.trim()}\n`, 'utf8')
   console.log(`✅ release-body.md 已生成: ${outputPath}`)
+  console.log(`[ReleaseBody] Final body length=${body.trim().length}`)
 }
 
 main().catch((error) => {
